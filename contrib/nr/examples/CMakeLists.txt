@@ -65,11 +65,12 @@ if(${ENABLE_EIGEN})
   )
   build_lib_example(
     NAME cttc-nr-mimo-demo
-    SOURCE_FILES ${source_files}
-    LIBRARIES_TO_LINK
-      ${libnr}
-      ${libflow-monitor}
-      ${SQLite3_LIBRARIES}
+  SOURCE_FILES ${source_files}
+  LIBRARIES_TO_LINK
+    ${libnr}
+    ${libflow-monitor}
+    ${libstats}
+    ${SQLite3_LIBRARIES}
   )
 endif()
 
