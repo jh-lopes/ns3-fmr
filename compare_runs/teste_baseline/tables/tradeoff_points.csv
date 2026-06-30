@@ -1,0 +1,2 @@
+run_id,seed,scenario,bandwidth,bandwidth_mhz,mode,aggregate_throughput_mbps,mean_flow_throughput_mbps,p5_flow_throughput_mbps,jain_rbg_slot_mean,mean_active_ues_per_slot,mean_zero_ue_percent
+teste_baseline,1,dynamic_continuous_30s,bw100,100,rr,10.110277000000004,0.28084102777777786,0.27978725000000004,0.6929160725583975,7.0416828983248925,21.759078907501188

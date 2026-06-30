@@ -42,3 +42,16 @@ __pycache__/
 nbuild/
 cmake-cache/
 compare_runs/
+
+# Ambiente Python e artefatos de build — nunca versionar
+.venv/
+build/
+cmake-cache/
+*.so
+*.so.*
+__pycache__/
+*.pyc
+
+# Resultados de simulação — grandes e gerados automaticamente
+compare_runs/
+pesquisa/resultados/

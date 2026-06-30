@@ -1,0 +1,232 @@
+Warn about uninitialized values.
+-- The CXX compiler identification is GNU 11.4.0
+-- Detecting CXX compiler ABI info
+-- Detecting CXX compiler ABI info - done
+-- Check for working CXX compiler: /usr/bin/c++ - skipped
+-- Detecting CXX compile features
+-- Detecting CXX compile features - done
+-- Using default output directory /home/julio/ns3-fmr/build
+-- Performing Test GCC_WORKING_PEDANTIC_SEMICOLON
+-- Performing Test GCC_WORKING_PEDANTIC_SEMICOLON - Success
+-- CCache is enabled.
+-- [33mProceeding without cmake-format[0m
+-- Performing Test STACKTRACE_LIBRARY_ENABLED
+-- Performing Test STACKTRACE_LIBRARY_ENABLED - Failed
+-- Found Git: /usr/bin/git (found version "2.34.1") 
+-- Found Python3: /home/julio/ns3-fmr/.venv/bin/python3 (found version "3.10.12") found components: Interpreter Development Development.Module Development.Embed 
+-- [33mNS3_BINDINGS_INSTALL_DIR was not set. The python bindings won't be installed with ./ns3 install. This setting is meant for packaging and redistribution.[0m
+-- [33mSet NS3_BINDINGS_INSTALL_DIR="/home/julio/.local/lib/python3.10/site-packages" to install it to the default location.[0m
+-- Found PkgConfig: /usr/bin/pkg-config (found version "0.29.2") 
+-- [33mdocs: doxygen documentation not enabled due to missing dependencies: doxygen dot dia[0m
+-- Failed to locate sphinx-build executable (missing: SPHINX_EXECUTABLE) 
+-- [33mdocs: sphinx documentation not enabled due to missing dependencies: Sphinx epstopdf pdflatex latexmk convert dvipng dia[0m
+-- Performing Test HAVE_UINT128_T
+-- Performing Test HAVE_UINT128_T - Failed
+-- Performing Test HAVE___UINT128_T
+-- Performing Test HAVE___UINT128_T - Success
+-- Looking for C++ include sys/types.h
+-- Looking for C++ include sys/types.h - found
+-- Looking for C++ include sys/stat.h
+-- Looking for C++ include sys/stat.h - found
+-- Looking for C++ include dirent.h
+-- Looking for C++ include dirent.h - found
+-- Looking for C++ include signal.h
+-- Looking for C++ include signal.h - found
+-- Looking for C++ include netpacket/packet.h
+-- Looking for C++ include netpacket/packet.h - found
+-- Looking for getenv
+-- Looking for getenv - found
+-- Precompiled headers were enabled.
+-- Processing contrib/ai
+-- Looking for C++ include stdint.h
+-- Looking for C++ include stdint.h - found
+-- Found Boost: /usr/lib/x86_64-linux-gnu/cmake/Boost-1.74.0/BoostConfig.cmake (found version "1.74.0") found components: program_options 
+-- Found Python: /home/julio/ns3-fmr/.venv/bin/python3.10 (found version "3.10.12") found components: Interpreter Development Development.Module Development.Embed 
+-- Python include directories: /usr/include/python3.10
+-- Python library directories: /usr/lib/x86_64-linux-gnu
+-- Performing Test HAS_FLTO
+-- Performing Test HAS_FLTO - Success
+-- Found pybind11: /usr/include (found version "2.9.1")
+-- Could NOT find Protobuf (missing: Protobuf_DIR)
+-- Found Protobuf: /usr/lib/x86_64-linux-gnu/libprotobuf.so (found version "3.12.4") 
+-- TensorFlow C library not found, examples using libtensorflow are disabled
+-- PyTorch C++ library not found, examples using libtorch are disabled
+-- Looking for protobuf_generate
+-- Looking for protobuf_generate - not found
+-- protobuf_generate function not found -> use a local copy from /home/julio/ns3-fmr/contrib/ai/protobuf-generate.cmake
+CMake Warning (dev) at contrib/ai/protobuf-generate.cmake:36 (foreach):
+  uninitialized variable '_dll_export_decl'
+Call Stack (most recent call first):
+  contrib/ai/CMakeLists.txt:94 (protobuf_generate)
+This warning is for project developers.  Use -Wno-dev to suppress it.
+
+CMake Warning (dev) at contrib/ai/protobuf-generate.cmake:138 (add_custom_command):
+  uninitialized variable '_plugin_options'
+Call Stack (most recent call first):
+  contrib/ai/CMakeLists.txt:94 (protobuf_generate)
+This warning is for project developers.  Use -Wno-dev to suppress it.
+
+CMake Warning (dev) at contrib/ai/protobuf-generate.cmake:138 (add_custom_command):
+  uninitialized variable '_plugin'
+Call Stack (most recent call first):
+  contrib/ai/CMakeLists.txt:94 (protobuf_generate)
+This warning is for project developers.  Use -Wno-dev to suppress it.
+
+CMake Warning (dev) at contrib/ai/protobuf-generate.cmake:138 (add_custom_command):
+  uninitialized variable 'protobuf_PROTOC_EXE'
+Call Stack (most recent call first):
+  contrib/ai/CMakeLists.txt:94 (protobuf_generate)
+This warning is for project developers.  Use -Wno-dev to suppress it.
+
+CMake Warning (dev) at contrib/ai/protobuf-generate.cmake:36 (foreach):
+  uninitialized variable '_dll_export_decl'
+Call Stack (most recent call first):
+  contrib/ai/CMakeLists.txt:100 (protobuf_generate)
+This warning is for project developers.  Use -Wno-dev to suppress it.
+
+CMake Warning (dev) at contrib/ai/protobuf-generate.cmake:138 (add_custom_command):
+  uninitialized variable '_plugin_options'
+Call Stack (most recent call first):
+  contrib/ai/CMakeLists.txt:100 (protobuf_generate)
+This warning is for project developers.  Use -Wno-dev to suppress it.
+
+CMake Warning (dev) at contrib/ai/protobuf-generate.cmake:138 (add_custom_command):
+  uninitialized variable '_plugin'
+Call Stack (most recent call first):
+  contrib/ai/CMakeLists.txt:100 (protobuf_generate)
+This warning is for project developers.  Use -Wno-dev to suppress it.
+
+CMake Warning (dev) at contrib/ai/protobuf-generate.cmake:138 (add_custom_command):
+  uninitialized variable 'protobuf_PROTOC_EXE'
+Call Stack (most recent call first):
+  contrib/ai/CMakeLists.txt:100 (protobuf_generate)
+This warning is for project developers.  Use -Wno-dev to suppress it.
+
+-- Processing contrib/nr
+-- Search-free PMI selection requires pyttb and pybind11, and only works on Unix
+-- Processing src/visualizer
+-- [33mNS3_BINDINGS_INSTALL_DIR was not set. The visualizer python module won't be installed with ./ns3 install.[0m
+-- Processing src/antenna
+-- Performing Test HAVE_STD_BESSEL_FUNC
+-- Performing Test HAVE_STD_BESSEL_FUNC - Success
+-- Standard library Bessel function has been found
+-- Processing src/aodv
+-- Processing src/applications
+-- Processing src/bridge
+-- Processing src/brite
+-- [33mSkipping src/brite[0m
+-- Processing src/buildings
+-- Processing src/click
+-- [33mSkipping src/click[0m
+-- Processing src/config-store
+-- Processing src/core
+-- Looking for include files boost/units/quantity.hpp, boost/units/systems/si.hpp
+-- Looking for include files boost/units/quantity.hpp, boost/units/systems/si.hpp - found
+-- Boost Units have been found.
+-- Performing Test COMPILER_HAS_HIDDEN_VISIBILITY
+-- Performing Test COMPILER_HAS_HIDDEN_VISIBILITY - Success
+-- Performing Test COMPILER_HAS_HIDDEN_INLINE_VISIBILITY
+-- Performing Test COMPILER_HAS_HIDDEN_INLINE_VISIBILITY - Success
+-- Performing Test COMPILER_HAS_DEPRECATED_ATTR
+-- Performing Test COMPILER_HAS_DEPRECATED_ATTR - Success
+-- Processing src/csma
+-- Processing src/csma-layout
+-- Processing src/dsdv
+-- Processing src/dsr
+-- Processing src/energy
+-- Processing src/fd-net-device
+-- Looking for C++ include net/ethernet.h
+-- Looking for C++ include net/ethernet.h - found
+-- Looking for C++ include netpacket/packet.h
+-- Looking for C++ include netpacket/packet.h - found
+-- Looking for C++ include net/if.h
+-- Looking for C++ include net/if.h - found
+-- Looking for C++ include linux/if_tun.h
+-- Looking for C++ include linux/if_tun.h - found
+-- Looking for C++ include net/netmap_user.h
+-- Looking for C++ include net/netmap_user.h - not found
+-- Looking for C++ include sys/ioctl.h
+-- Looking for C++ include sys/ioctl.h - found
+-- Checking for module 'libdpdk'
+--   No package 'libdpdk' found
+-- Processing src/flow-monitor
+-- Processing src/internet
+-- Processing src/internet-apps
+-- Processing src/lr-wpan
+-- Processing src/lte
+-- Processing src/mesh
+-- Processing src/mobility
+-- Processing src/netanim
+-- Processing src/network
+-- Processing src/nix-vector-routing
+-- Processing src/olsr
+-- Processing src/openflow
+-- [33mSkipping src/openflow[0m
+-- Processing src/point-to-point
+-- Processing src/point-to-point-layout
+-- Processing src/propagation
+-- Processing src/sixlowpan
+-- Processing src/spectrum
+-- Processing src/stats
+-- Processing src/tap-bridge
+-- Processing src/topology-read
+-- Processing src/traffic-control
+-- Processing src/uan
+-- Processing src/virtual-net-device
+-- Processing src/wifi
+-- Processing src/zigbee
+-- ---- Summary of ns-3 settings:
+Build profile                 : default
+Build directory               : /home/julio/ns3-fmr/build
+Build with runtime asserts    : [32mON[0m
+Build with runtime logging    : [32mON[0m
+Build version embedding       : OFF (not requested)
+BRITE Integration             : [31mOFF (Missing headers: "Brite.h" and missing libraries: "brite")[0m
+DES Metrics event collection  : OFF (not requested)
+DPDK NetDevice                : OFF (not requested)
+Emulation FdNetDevice         : [32mON[0m
+Examples                      : OFF (not requested)
+File descriptor NetDevice     : [32mON[0m
+GNU Scientific Library (GSL)  : [31mOFF (GSL was not found)[0m
+GtkConfigStore                : [31mOFF (Harfbuzz is required by GTK3 and was not found)[0m
+LibXml2 support               : [32mON[0m
+MPI Support                   : OFF (not requested)
+ns-3 Click Integration        : [31mOFF (Missing headers: "simclick.h" and missing libraries: "nsclick click")[0m
+ns-3 OpenFlow Integration     : [31mOFF (Missing headers: "openflow.h" and missing libraries: "openflow")[0m
+Netmap emulation FdNetDevice  : [31mOFF (missing dependency)[0m
+PyViz visualizer              : [32mON[0m
+Python Bindings               : [32mON[0m
+SQLite support                : [31mOFF (missing dependency)[0m
+Eigen3 support                : [32mON[0m
+Tap Bridge                    : [32mON[0m
+Tap FdNetDevice               : [32mON[0m
+Tests                         : OFF (not requested)
+
+
+Modules configured to be built:
+ai                        antenna                   aodv                      
+applications              bridge                    buildings                 
+config-store              core                      csma                      
+csma-layout               dsdv                      dsr                       
+energy                    fd-net-device             flow-monitor              
+internet                  internet-apps             lr-wpan                   
+lte                       mesh                      mobility                  
+netanim                   network                   nix-vector-routing        
+nr                        olsr                      point-to-point            
+point-to-point-layout     propagation               sixlowpan                 
+spectrum                  stats                     tap-bridge                
+topology-read             traffic-control           uan                       
+virtual-net-device        visualizer                wifi                      
+zigbee                    
+
+Modules that cannot be built:
+brite                     click                     mpi                       
+openflow                  test                      
+
+
+-- Configuring done
+-- Generating done
+-- Build files have been written to: /home/julio/ns3-fmr/cmake-cache
+Finished executing the following commands:
+mkdir cmake-cache
+/usr/bin/cmake -S /home/julio/ns3-fmr -DPython3_LIBRARY_DIRS=/usr/lib/x86_64-linux-gnu -DPython3_INCLUDE_DIRS=/usr/include/python3.10 -DPython3_EXECUTABLE=/home/julio/ns3-fmr/.venv/bin/python3 -B /home/julio/ns3-fmr/cmake-cache -DCMAKE_BUILD_TYPE=default -DNS3_ASSERT=ON -DNS3_LOG=ON -DNS3_WARNINGS_AS_ERRORS=OFF -DNS3_NATIVE_OPTIMIZATIONS=OFF -DNS3_EXAMPLES=OFF -DNS3_PYTHON_BINDINGS=ON -DNS3_TESTS=OFF -G Ninja --warn-uninitialized

@@ -1,0 +1,2 @@
+run_id,seed,scenario,bandwidth,bandwidth_mhz,mode,n_flows,aggregate_throughput_mbps,mean_flow_throughput_mbps,min_flow_throughput_mbps,p5_flow_throughput_mbps,max_flow_throughput_mbps,std_flow_throughput_mbps,mean_delay_ms,max_delay_ms,mean_jitter_ms,mean_loss_ratio,max_loss_ratio
+teste_baseline,1,dynamic_continuous_30s,bw100,100,rr,36,10.110277000000004,0.28084102777777786,0.278576,0.27978725000000004,0.280998,0.0005651048814213002,11.345079444444444,24.6,3.3533002777777785,0.0005587483333333333,0.00862069

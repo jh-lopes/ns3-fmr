@@ -1,0 +1,2 @@
+seed,scenario,bandwidth,bandwidth_mhz,mode,n_slots,n_rntis,mean_buf_req,median_buf_req,max_buf_req,sum_buf_req_mean_per_slot,sum_buf_req_max_per_slot,mean_backlogged_ues_per_slot,mean_served_ues_per_slot,pct_buf_gt0_alloc_eq0,pct_buf_eq0_alloc_eq0,pct_buf_gt0_alloc_gt0,mean_jain_buf_req_per_slot,mean_jain_alloc_per_slot
+1,dynamic_continuous_30s,bw100,100,rr,2567,9,5286.653518477539,4407.0,12224.0,37226.93767043241,110016.0,7.0416828983248925,7.0416828983248925,0.0,0.0,100.0,0.6953504641597458,0.6929160725583975

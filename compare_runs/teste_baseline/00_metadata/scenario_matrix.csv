@@ -1,0 +1,2 @@
+seed,scenario,purpose,bandwidth_mhz,num_ues,lambda,num_dl_flows_per_ue,sim_time,udp_packet_size,extra_ns3_args
+1,dynamic_continuous_30s,Cenário contínuo com 9 UEs e cinco fases de tráfego na mesma simulação.,100,9,200,4,5s,3000,"{'dynamicTraffic': '1', 'phaseDurations': '6,6,6,6,6', 'phaseLambdas': '5,10,15,8,20', 'tddPattern': 'DL|DL|DL|DL|UL|DL|DL|DL|DL|UL|'}"

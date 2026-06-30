@@ -1,0 +1,18 @@
+Metrica,Valor
+TypeTraffic,EMBB
+DescricaoTrafego,Enhanced Mobile Broadband - foco em vazão
+TamanhoPacoteUDP(bytes),3000
+LambdaUDP(pacotes/s),1000
+VazaoAgregada(Mbps),13.6058
+VazaoMedia(Mbps),6.80291
+AtrasoMedio(ms),7.37833
+JitterMedio(ms),0.982188
+PDRMedio(%),28.0833
+JainThroughput,0.999569
+TxPacketsTotal,1200
+RxPacketsTotal,337
+PerdasTotal,0
+FluxosAtivos,2
+Escalonador,PF
+ModoEscalonador,Tdma
+TempoSimulacao(s),1

@@ -266,6 +266,10 @@ SchedulerTypeFromMode(const std::string& schedulerMode)
     {
         return "ns3::NrMacSchedulerOfdmaMR";
     }
+    if (schedulerMode == "qos")
+    {
+        return "ns3::NrMacSchedulerOfdmaQos";
+    }
     if (schedulerMode == "fmr_rl")
     {
         return "ns3::NrMacSchedulerOfdmaFmr";
