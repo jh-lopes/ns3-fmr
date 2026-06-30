@@ -23,9 +23,12 @@
 //   7. Distância UE-gNB no CSV de saída
 //   8. Mobilidade dinâmica configurável via parâmetro
 //
-// Estrutura do arquivo:
-//   - Bloco 2 (struct + função de perfis) vem ANTES do main()
-//   - Blocos 1 e 3 ficam DENTRO do main()
+// Organização do código:
+//   - simulacao-dissertacao-utils.h contém a struct
+//     PerfilDeTrafego, ObterPerfilDeTrafego() e o
+//     SinrCallback() — funções auxiliares usadas pelo main()
+//   - Este arquivo contém apenas o main() com os blocos
+//     de configuração da simulação, em ordem sequencial
 // ============================================================
 
 // ------------------------------------------------------------
@@ -40,15 +43,17 @@
 #include "ns3/internet-module.h"      // Pilha IP, roteamento estático
 #include "ns3/mobility-module.h"      // Modelos de mobilidade (fixo e dinâmico)
 #include "ns3/network-module.h"       // NodeContainer, NetDeviceContainer
-#include "ns3/nr-module.h"
+#include "ns3/nr-module.h"            // 5G-LENA: NrHelper, schedulers, bearers
 #include "ns3/point-to-point-module.h"// Link ponto-a-ponto (core network)
-#include <map>                          // std::map para g_sinrAcumulado
+
+#include "simulacao-dissertacao-utils.h" // PerfilDeTrafego, SinrCallback
 
 #include <algorithm>  // std::sort, std::transform (para p99 e normalização)
 #include <cmath>      // std::sqrt, std::pow
 #include <fstream>    // Escrita de arquivos CSV
 #include <iomanip>    // Formatação numérica (setprecision)
 #include <iostream>   // Saída no console
+#include <map>        // std::map
 #include <numeric>    // std::accumulate
 #include <string>
 #include <vector>
@@ -58,165 +63,6 @@ using namespace ns3;
 // Identificador de log para este arquivo.
 // Para ativar: export NS_LOG="SimulacaoDissertacao=level_info"
 NS_LOG_COMPONENT_DEFINE("SimulacaoDissertacao");
-
-// ============================================================
-// BLOCO 2: PERFIS DE TRÁFEGO
-//
-// IMPORTANTE: este bloco fica ANTES do main() porque define
-// uma struct e uma função que são usadas dentro do main().
-// Em C++, funções precisam ser declaradas antes de serem
-// chamadas — por isso não podem ficar dentro do main().
-//
-// Cada perfil representa um caso de uso 5G distinto,
-// baseado nas especificações 3GPP TR 38.913 V17.0.0.
-// ============================================================
-
-// ------------------------------------------------------------
-// Struct PerfilDeTrafego
-//
-// Agrupa todos os parâmetros que definem como o tráfego UDP
-// é gerado para cada caso de uso 5G.
-// ------------------------------------------------------------
-struct PerfilDeTrafego
-{
-    std::string nome;        // Identificador do perfil
-    std::string descricao;   // Descrição para o CSV de saída
-    uint32_t pacoteBytes;    // Tamanho do pacote UDP em bytes
-    uint32_t lambda;         // Taxa de envio em pacotes/segundo
-    uint32_t flowsPorUe;     // Número de fluxos UDP por UE
-    NrEpsBearer::Qci bearerQci;  // QCI do bearer EPS (define prioridade)
-    uint32_t discardTimerMs; // PDCP discard timer em ms (0 = desativado)
-};
-
-// ------------------------------------------------------------
-// ObterPerfilDeTrafego()
-//
-// Recebe o nome do perfil via parâmetro e retorna a
-// configuração correspondente.
-//
-// Justificativas dos parâmetros por perfil:
-//
-// eMBB (Enhanced Mobile Broadband):
-//   - 1500 bytes: MTU típica de vídeo HD
-//   - lambda=1000: ~12 Mbps por fluxo, estressando a rede
-//   - 2 fluxos/UE: simula vídeo + dados simultâneos
-//   - NGBR_LOW_LAT_EMBB (QCI 70): Non-GBR, baixa latência
-//   - Sem discard: eMBB tolera variação de delay
-//   Referência: 3GPP TR 38.913 Tabela 7.1
-//
-// URLLC (Ultra-Reliable Low-Latency Communications):
-//   - 200 bytes: pacote de controle típico (telemetria)
-//   - lambda=500: carga média-alta para estressar scheduler
-//   - 1 fluxo/UE: canal de controle por dispositivo
-//   - GBR_CONV_VOICE (QCI 1): GBR, prioridade máxima,
-//     delay budget 100ms, packet error rate 10^-2
-//   - discardTimerMs=100: descarta pacotes > 100ms
-//   Referência: 3GPP TS 22.261 Tabela 5.2-1
-//
-// mMTC (Massive Machine-Type Communications):
-//   - 100 bytes: sensor/telemetria (temperatura, GPS)
-//   - lambda=10: tráfego esporádico, ~8 kbps/dispositivo
-//   - 1 fluxo/UE: um canal por sensor
-//   - NGBR_VIDEO_TCP_DEFAULT (QCI 9): best effort
-//   - Sem discard: mMTC não tem requisito crítico de latência
-//   Referência: 3GPP TR 38.913 Tabela 7.2
-// ------------------------------------------------------------
-PerfilDeTrafego
-ObterPerfilDeTrafego(const std::string& trafficProfile)
-{
-    // Normaliza para minúsculas — evita erro por capitalização
-    // (ex: "EMBB" e "embb" funcionam igualmente)
-    std::string perfil = trafficProfile;
-    std::transform(perfil.begin(), perfil.end(),
-                   perfil.begin(), ::tolower);
-
-    if (perfil == "embb")
-    {
-        return {
-            "embb",
-            "Enhanced Mobile Broadband - foco em vazão (vídeo HD)",
-            1500,                            // pacoteBytes
-            1000,                            // lambda (pkt/s)
-            2,                               // flowsPorUe
-            NrEpsBearer::NGBR_LOW_LAT_EMBB, // QCI 70
-            0                                // sem discard
-        };
-    }
-
-    if (perfil == "urllc")
-    {
-        return {
-            "urllc",
-            "Ultra-Reliable Low-Latency - foco em latência e confiabilidade",
-            200,                             // pacoteBytes
-            500,                             // lambda (pkt/s)
-            1,                               // flowsPorUe
-            NrEpsBearer::GBR_CONV_VOICE,     // QCI 1 — prioridade máxima
-            100                              // discardTimerMs = delay budget URLLC
-        };
-    }
-
-    if (perfil == "mmtc")
-    {
-        return {
-            "mmtc",
-            "Massive Machine-Type Comms - IoT massivo, tráfego esporádico",
-            100,                                // pacoteBytes
-            10,                                 // lambda (pkt/s)
-            1,                                  // flowsPorUe
-            NrEpsBearer::NGBR_VIDEO_TCP_DEFAULT, // QCI 9 — best effort
-            0                                   // sem discard
-        };
-    }
-
-    // Perfil não reconhecido: aborta com mensagem clara
-    NS_ABORT_MSG("trafficProfile inválido: '" << trafficProfile
-        << "'. Opções válidas: embb | urllc | mmtc");
-
-    // Nunca alcançado — suprime warning de retorno
-    return {};
-}
-
-// ============================================================
-// BLOCO 6A: ESTRUTURAS DE COLETA DE SINR
-//
-// Definidas antes do main() — são usadas pelo callback
-// que é registrado durante a simulação.
-// ============================================================
-
-// Armazena acumulado de SINR por RNTI do UE.
-// rnti (uint16_t) → identificador único do UE na célula
-// Mapa: rnti → {soma_sinr_db, contagem_amostras}
-std::map<uint16_t, std::pair<double, uint32_t>> g_sinrAcumulado;
-
-// ------------------------------------------------------------
-// SinrCallback()
-//
-// Chamada pelo trace DlDataSinr a cada slot de simulação.
-// Acumula o SINR em escala linear e converte para dB ao final.
-//
-// Parâmetros (definidos pela assinatura DlDataSinrTracedCallback):
-//   cellId → ID da célula (não usado aqui)
-//   rnti   → identificador do UE — chave do mapa
-//   sinr   → valor do SINR em escala linear
-//   bwpId  → ID da BWP (não usado aqui)
-// ------------------------------------------------------------
-void
-SinrCallback(uint16_t cellId,
-             uint16_t rnti,
-             double   sinr,
-             uint16_t bwpId)
-{
-
-
-    // Converte SINR linear para dB
-    // Fórmula: SINR_dB = 10 * log10(SINR_linear)
-    double sinrDb = 10.0 * std::log10(sinr);
-
-    // Acumula soma e contagem para cálculo da média posterior
-    g_sinrAcumulado[rnti].first  += sinrDb;
-    g_sinrAcumulado[rnti].second += 1;
-}
 
 // ============================================================
 // FUNÇÃO PRINCIPAL
@@ -251,10 +97,10 @@ main(int argc, char* argv[])
     uint8_t numerology       = 1;
 
     // --- Simulação ---
-    Time     simTime        = Seconds(30.0);
+    Time     simTime         = Seconds(30.0);
     Time     udpAppStartTime = MilliSeconds(400);
-    uint32_t seed           = 1;  // Seeds 1, 2, 3 para repetições
-    uint32_t run            = 1;
+    uint32_t seed            = 1;  // Seeds 1, 2, 3 para repetições
+    uint32_t run             = 1;
 
     // --- Mobilidade ---
     // enableMobility=false → posições fixas (Bateria 1 e 2)
@@ -279,6 +125,16 @@ main(int argc, char* argv[])
     double      fmrAlphaFixed  = 0.7;
     double      fmrTau         = 0.70;
 
+    // --- QoS scheduler ---
+    // FairnessIndex: 0.0 = máxima eficiência, 1.0 = máxima justiça
+    // Valor 0.5: equilíbrio — comparável ao PF
+    // LastAvgTPutWeight: peso da média histórica de throughput
+    // (nome interno do atributo no ns3::NrMacSchedulerOfdmaQos —
+    // ver contrib/nr/model/nr-mac-scheduler-ofdma-qos.cc)
+    // Referência: 3GPP TS 36.213 — scheduling policies
+    double qosFairnessIndex = 0.5;
+    double qosTimeWindow    = 99.0; // janela temporal em ms
+
     // --- Saída ---
     std::string outputDir   = "./";
     std::string simTag      = "default";
@@ -298,7 +154,8 @@ main(int argc, char* argv[])
     std::string ueSnapshotCsvPath    = "ue_snapshot.csv";
     Time        ueSnapshotPeriod     = MilliSeconds(100);
 
-    // Tráfego dinâmico por fases
+    // Tráfego dinâmico por fases (herdado do fmr-compara-qos.cc,
+    // mantido para compatibilidade com run_simulacao.py)
     bool        dynamicTraffic = false;
     std::string phaseDurations = "6,6,6,6,6";
     std::string phaseLambdas   = "5,10,15,8,20";
@@ -372,6 +229,15 @@ main(int argc, char* argv[])
     cmd.AddValue("FmrAlphaFixed",  "Alpha fixo do FMR",     fmrAlphaFixed);
     cmd.AddValue("FmrTau",         "Tau do FMR",            fmrTau);
 
+    // QoS scheduler
+    cmd.AddValue("QosFairnessIndex",
+                 "FairnessIndex do QoS scheduler (0=eficiência, 1=justiça)",
+                 qosFairnessIndex);
+    cmd.AddValue("QosTimeWindow",
+                 "LastAvgTPutWeight do QoS scheduler — peso da média "
+                 "histórica (padrão: 99)",
+                 qosTimeWindow);
+
     // Saída
     cmd.AddValue("outputDir",            "Diretório de saída",       outputDir);
     cmd.AddValue("simTag",               "Tag dos arquivos",         simTag);
@@ -388,20 +254,6 @@ main(int argc, char* argv[])
     cmd.AddValue("phaseDurations",       "Duração das fases (s)",   phaseDurations);
     cmd.AddValue("phaseLambdas",         "Lambda por fase (pkt/s)", phaseLambdas);
     cmd.AddValue("tddPattern",           "Padrão TDD",              tddPattern);
-
-// Parâmetros do QoS scheduler
-    // FairnessIndex: 0.0 = máxima eficiência, 1.0 = máxima justiça
-    // Valor 0.5: equilíbrio — comparável ao PF
-    // Referência: 3GPP TS 36.213 — scheduling policies
-    double qosFairnessIndex = 0.5;
-    double qosTimeWindow    = 99.0; // janela temporal em ms
-
-    cmd.AddValue("QosFairnessIndex",
-                 "FairnessIndex do QoS scheduler (0=eficiência, 1=justiça)",
-                 qosFairnessIndex);
-    cmd.AddValue("QosTimeWindow",
-                 "LastAvgTPutWeight do QoS scheduler — peso da média histórica (padrão: 99)",
-                 qosTimeWindow);
 
     cmd.Parse(argc, argv);
 
@@ -433,7 +285,7 @@ main(int argc, char* argv[])
     // --------------------------------------------------------
 
     // --- 3.1 Obter perfil de tráfego ---
-    // Chamada à função definida antes do main()
+    // Chamada à função definida em simulacao-dissertacao-utils.h
     PerfilDeTrafego perfil = ObterPerfilDeTrafego(trafficProfile);
 
     NS_LOG_INFO("Perfil: "    << perfil.nome
@@ -654,15 +506,9 @@ main(int argc, char* argv[])
 
     // --------------------------------------------------------
     // FIM DO BLOCO 3
-    // Próximos blocos a implementar:
-    //   Bloco 4 — Configuração do Scheduler
-    //   Bloco 5 — Aplicações UDP com bearers QCI
-    //   Bloco 6 — Traces: SINR e distância UE-gNB
-    //   Bloco 7 — FlowMonitor + CSVs de saída
-    //   Bloco 8 — Resumo consolidado
     // --------------------------------------------------------
 
-// --------------------------------------------------------
+    // --------------------------------------------------------
     // BLOCO 4: CONFIGURAÇÃO DO SCHEDULER
     //
     // Seleciona o scheduler MAC baseado em --schedulerMode.
@@ -686,7 +532,8 @@ main(int argc, char* argv[])
     //   QoS → ns3::NrMacSchedulerOfdmaQos
     //         Considera QCI, HOL delay e delay budget.
     //         Projetado para tráfego heterogêneo (URLLC/eMBB).
-    //         Parâmetros configuráveis: FairnessIndex, TimeWindow.
+    //         Parâmetros configuráveis: FairnessIndex,
+    //         LastAvgTPutWeight.
     //
     //   FMR → ns3::NrMacSchedulerOfdmaFmr
     //         Baseado em Reinforcement Learning (PPO).
@@ -729,9 +576,9 @@ main(int argc, char* argv[])
         //   e justiça. Valor padrão 0.5 = equilíbrio.
         //   Aumentar → mais justo (similar ao RR)
         //   Diminuir → mais eficiente (similar ao MR)
-// LastAvgTPutWeight: peso da média histórica de throughput.
-        //   Maior janela → decisões mais estáveis
-        //   Menor janela → reage mais rápido às mudanças
+        // LastAvgTPutWeight: peso da média histórica de
+        //   throughput. Maior valor → decisões mais estáveis;
+        //   menor valor → reage mais rápido às mudanças.
         nrHelper->SetSchedulerTypeId(
             TypeId::LookupByName("ns3::NrMacSchedulerOfdmaQos"));
         nrHelper->SetSchedulerAttribute(
@@ -790,8 +637,9 @@ main(int argc, char* argv[])
 
     // --------------------------------------------------------
     // FIM DO BLOCO 4
-   
-   // --------------------------------------------------------
+    // --------------------------------------------------------
+
+    // --------------------------------------------------------
     // BLOCO 5: APLICAÇÕES UDP COM BEARERS QCI
     //
     // Este bloco é a principal diferença desta dissertação
@@ -829,7 +677,7 @@ main(int argc, char* argv[])
     }
 
     // --- 5.2 Instalar aplicações UDP ---
-    // Para cada UE, criamos 'flowsPorUe' pares cliente-servidor.
+    // Instala 'flowsPorUe' pares cliente-servidor por UE.
     // O servidor roda no UE (recebe dados).
     // O cliente roda no servidor remoto (envia dados).
     // Isso simula downlink — que é o caso principal do 5G.
@@ -923,44 +771,43 @@ main(int argc, char* argv[])
 
     // --------------------------------------------------------
     // FIM DO BLOCO 5
-    
+    // --------------------------------------------------------
+
     // --------------------------------------------------------
     // BLOCO 6: COLETA DE SINR E DISTÂNCIA UE-gNB
     //
     // Contribuição original — não implementado no
     // fmr-compara-qos.cc do Diego.
     //
-    // SINR: conecta callback ao trace DlDataSinr de todos
-    //   os UEs via Config::Connect com wildcard.
-    //   Valores acumulados por RNTI durante a simulação.
-    //   Média calculada no Bloco 8 (resumo final).
+    // SINR: conecta SinrCallback() (definido em
+    //   simulacao-dissertacao-utils.h) diretamente em cada
+    //   UE PHY via TraceConnectWithoutContext. Essa abordagem
+    //   é mais confiável que Config::Connect com wildcard (*),
+    //   que não localiza corretamente os objetos NrUePhy
+    //   quando há nós adicionais do EPC no NodeList.
+    //   Valores acumulados por RNTI em g_sinrAcumulado durante
+    //   a simulação. Média calculada no Bloco 8 (resumo final).
     //
     // Distância: extraída do MobilityModel após posicionamento.
     //   Calculada uma vez — posições são fixas (Bateria 1 e 2).
     // --------------------------------------------------------
 
     // --- 6.1 Conectar trace de SINR ---
-    // O caminho usa wildcards (*) para cobrir todos os UEs,
-    // todos os devices e todos os component carriers.
-    // O callback SinrCallback() é chamado a cada slot.
-    Config::ConnectWithoutContext(
-    "/NodeList/*/DeviceList/*"
-    "/ComponentCarrierMapUe/*/NrUePhy/DlDataSinr",
-    MakeCallback(&SinrCallback));
-
-    // Conexão direta em cada UE PHY — mais confiável que wildcard.
-// GetUePhy(device, bwpIndex) retorna o objeto PHY do UE
-// para a BWP de índice 0 (única BWP configurada).
-for (uint32_t i = 0; i < ueDevs.GetN(); ++i)
-{
-    Ptr<NrUePhy> uePhy = nrHelper->GetUePhy(ueDevs.Get(i), 0);
-    uePhy->TraceConnectWithoutContext(
-        "DlDataSinr",
-        MakeCallback(&SinrCallback));
-}
+    // GetUePhy(device, bwpIndex) retorna o objeto PHY do UE
+    // para a BWP de índice 0 (única BWP configurada — ver
+    // Bloco 3.5). TraceConnectWithoutContext conecta o
+    // callback sem passar o caminho do objeto como string,
+    // compatível com a assinatura de SinrCallback().
+    for (uint32_t i = 0; i < ueDevs.GetN(); ++i)
+    {
+        Ptr<NrUePhy> uePhy = nrHelper->GetUePhy(ueDevs.Get(i), 0);
+        uePhy->TraceConnectWithoutContext(
+            "DlDataSinr",
+            MakeCallback(&SinrCallback));
+    }
 
     NS_LOG_INFO("Trace DlDataSinr conectado diretamente em "
-         << ueDevs.GetN() << " UEs via GetUePhy");
+             << ueDevs.GetN() << " UEs via GetUePhy");
 
     // --- 6.2 Coletar distâncias UE-gNB ---
     // Extraída do MobilityModel — posição definida no Bloco 3.
@@ -990,22 +837,19 @@ for (uint32_t i = 0; i < ueDevs.GetN(); ++i)
     // --------------------------------------------------------
     // FIM DO BLOCO 6
     // Próximo: Bloco 7 — FlowMonitor + CSVs de saída
-    // --------------------------------------------------------
-    
-   
-   
-   
-    // --------------------------------------------------------
-    
+    //          Bloco 8 — Resumo consolidado
     // --------------------------------------------------------
 
     // Temporário: executa simulação mínima para validar blocos
     Simulator::Stop(Seconds(1.0));
-Simulator::Run();
-NS_LOG_UNCOND("SINR coletado para " << g_sinrAcumulado.size() << " UEs (RNTIs)");
-Simulator::Destroy();
+    Simulator::Run();
 
-    NS_LOG_UNCOND("Blocos 1-3 OK. Arquivo: " << outputDir
+    NS_LOG_UNCOND("SINR coletado para " << g_sinrAcumulado.size()
+               << " UEs (RNTIs)");
+
+    Simulator::Destroy();
+
+    NS_LOG_UNCOND("Blocos 1-6 OK. Arquivo: " << outputDir
                << " scheduler=" << schedulerMode
                << " perfil=" << perfil.nome);
 

@@ -6,3 +6,7 @@
 !/print-fmr-typeid.cc
 !/sim.cc
 !/fmr-compara-qos.cc
+!/simulacao-dissertacao.cc
+!/simulacao-dissertacao-utils.h
+!/sim5G/
+!/sim5G/**
