@@ -55,3 +55,6 @@ __pycache__/
 # Resultados de simulação — grandes e gerados automaticamente
 compare_runs/
 pesquisa/resultados/
+
+# Arquivo de lock gerado automaticamente a cada build do ns-3
+.lock-ns3_linux_build

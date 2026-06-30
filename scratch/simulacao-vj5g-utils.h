@@ -1,8 +1,8 @@
 // ============================================================
-// simulacao-dissertacao-utils.h
+// simulacao-vj5g-utils.h
 //
 // Funções e estruturas auxiliares usadas por
-// simulacao-dissertacao.cc — separadas em header para manter
+// simulacao-vj5g.cc — separadas em header para manter
 // o arquivo principal mais enxuto e organizado por
 // responsabilidade.
 //
@@ -15,8 +15,8 @@
 // Autor: Júlio Henrique da Silva Lopes — UFAC (2026)
 // ============================================================
 
-#ifndef SIMULACAO_DISSERTACAO_UTILS_H
-#define SIMULACAO_DISSERTACAO_UTILS_H
+#ifndef SIMULACAO_VJ5G_UTILS_H
+#define SIMULACAO_VJ5G_UTILS_H
 
 #include "ns3/core-module.h"
 #include "ns3/nr-module.h"
@@ -150,7 +150,7 @@ ObterPerfilDeTrafego(const std::string& trafficProfile)
 //
 // Definidas neste header (escopo global) porque o callback
 // é registrado durante a simulação (Bloco 6, em
-// simulacao-dissertacao.cc) e precisa de uma variável
+// simulacao-vj5g.cc) e precisa de uma variável
 // acessível tanto pelo callback quanto pelo main() ao final
 // da simulação para calcular as médias por UE.
 // ============================================================
@@ -165,7 +165,7 @@ inline std::map<uint16_t, std::pair<double, uint32_t>> g_sinrAcumulado;
 //
 // Conectada diretamente a cada UE PHY via
 // TraceConnectWithoutContext (ver Bloco 6 em
-// simulacao-dissertacao.cc). Chamada a cada slot de simulação.
+// simulacao-vj5g.cc). Chamada a cada slot de simulação.
 // Acumula o SINR em escala linear e converte para dB ao final.
 //
 // Parâmetros (definidos pela assinatura DlDataSinrTracedCallback):
@@ -189,4 +189,4 @@ SinrCallback(uint16_t cellId,
     g_sinrAcumulado[rnti].second += 1;
 }
 
-#endif // SIMULACAO_DISSERTACAO_UTILS_H
+#endif // SIMULACAO_VJ5G_UTILS_H

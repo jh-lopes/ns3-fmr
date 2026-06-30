@@ -1,5 +1,5 @@
 // ============================================================
-// simulacao-dissertacao.cc
+// simulacao-vj5g.cc
 //
 // Cenário de simulação 5G NR para dissertação de mestrado:
 // "Uma Análise da Relação entre Vazão e Justiça na Divisão
@@ -24,7 +24,7 @@
 //   8. Mobilidade dinâmica configurável via parâmetro
 //
 // Organização do código:
-//   - simulacao-dissertacao-utils.h contém a struct
+//   - simulacao-vj5g-utils.h contém a struct
 //     PerfilDeTrafego, ObterPerfilDeTrafego() e o
 //     SinrCallback() — funções auxiliares usadas pelo main()
 //   - Este arquivo contém apenas o main() com os blocos
@@ -46,7 +46,7 @@
 #include "ns3/nr-module.h"            // 5G-LENA: NrHelper, schedulers, bearers
 #include "ns3/point-to-point-module.h"// Link ponto-a-ponto (core network)
 
-#include "simulacao-dissertacao-utils.h" // PerfilDeTrafego, SinrCallback
+#include "simulacao-vj5g-utils.h" // PerfilDeTrafego, SinrCallback
 
 #include <algorithm>  // std::sort, std::transform (para p99 e normalização)
 #include <cmath>      // std::sqrt, std::pow
@@ -61,8 +61,8 @@
 using namespace ns3;
 
 // Identificador de log para este arquivo.
-// Para ativar: export NS_LOG="SimulacaoDissertacao=level_info"
-NS_LOG_COMPONENT_DEFINE("SimulacaoDissertacao");
+// Para ativar: export NS_LOG="SimulacaoVJ5G=level_info"
+NS_LOG_COMPONENT_DEFINE("SimulacaoVJ5G");
 
 // ============================================================
 // FUNÇÃO PRINCIPAL
@@ -285,7 +285,7 @@ main(int argc, char* argv[])
     // --------------------------------------------------------
 
     // --- 3.1 Obter perfil de tráfego ---
-    // Chamada à função definida em simulacao-dissertacao-utils.h
+    // Chamada à função definida em simulacao-vj5g-utils.h
     PerfilDeTrafego perfil = ObterPerfilDeTrafego(trafficProfile);
 
     NS_LOG_INFO("Perfil: "    << perfil.nome
@@ -780,7 +780,7 @@ main(int argc, char* argv[])
     // fmr-compara-qos.cc do Diego.
     //
     // SINR: conecta SinrCallback() (definido em
-    //   simulacao-dissertacao-utils.h) diretamente em cada
+    //   simulacao-vj5g-utils.h) diretamente em cada
     //   UE PHY via TraceConnectWithoutContext. Essa abordagem
     //   é mais confiável que Config::Connect com wildcard (*),
     //   que não localiza corretamente os objetos NrUePhy
