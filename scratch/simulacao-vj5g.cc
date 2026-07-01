@@ -57,6 +57,7 @@
 #include <numeric>    // std::accumulate
 #include <string>
 #include <vector>
+#include <sstream>   // mobilidade manual
 
 using namespace ns3;
 
@@ -110,7 +111,7 @@ main(int argc, char* argv[])
     double      mobilitySpeedMin = 0.5;   // m/s — pedestre lento
     double      mobilitySpeedMax = 1.5;   // m/s — pedestre rápido
     double      mobilityBounds   = 200.0; // m — raio da área / distância máxima
-
+    std::string ueDistances      = ""; // distancia manual 
     // --- ns3-ai (para FMR com agente RL) ---
     // Para outros schedulers, enableNs3Ai deve ser false
     bool        enableNs3Ai    = false;
@@ -161,6 +162,11 @@ main(int argc, char* argv[])
     std::string phaseLambdas   = "5,10,15,8,20";
     std::string tddPattern     = "DL|DL|DL|DL|UL|DL|DL|DL|DL|UL|";
 
+// lambdaOverride: sobrescreve o lambda do perfil de tráfego.
+    // Valor 0 = usa o lambda definido pelo perfil (padrão).
+    // Útil para testes de sobrecarga sem criar um novo perfil.
+    uint32_t lambdaOverride = 0;
+
     // --------------------------------------------------------
     // Registro dos parâmetros na linha de comando
     // --------------------------------------------------------
@@ -176,6 +182,9 @@ main(int argc, char* argv[])
     cmd.AddValue("ueNumPergNb",
                  "Número de UEs por gNB (9 para Bateria 1, 30 para mMTC)",
                  ueNumPergNb);
+cmd.AddValue("lambdaOverride",
+                 "Sobrescreve lambda do perfil (0=usa perfil, >0=sobrescreve)",
+                 lambdaOverride);
     cmd.AddValue("gNbNum",
                  "Número de gNBs (padrão: 1)",
                  gNbNum);
@@ -215,6 +224,9 @@ main(int argc, char* argv[])
     cmd.AddValue("mobilityBounds",
                  "Raio da área em metros (fixo: distância máxima)",
                  mobilityBounds);
+     cmd.AddValue("ueDistances",
+             "Distâncias fixas dos UEs em metros. Ex.: 10,250,260",
+             ueDistances);            
 
     // ns3-ai / FMR
     cmd.AddValue("EnableNs3Ai",    "Ativa agente Python para FMR", enableNs3Ai);
@@ -288,6 +300,15 @@ main(int argc, char* argv[])
     // Chamada à função definida em simulacao-vj5g-utils.h
     PerfilDeTrafego perfil = ObterPerfilDeTrafego(trafficProfile);
 
+    // Aplica override de lambda se especificado via linha de comando.
+    // Permite testar cenários de sobrecarga sem criar novos perfis.
+    if (lambdaOverride > 0)
+    {
+        NS_LOG_UNCOND("[VJ5G] Lambda sobrescrito: "
+                   << perfil.lambda << " → " << lambdaOverride << " pkt/s");
+        perfil.lambda = lambdaOverride;
+    }
+    
     NS_LOG_INFO("Perfil: "    << perfil.nome
              << " pacote="    << perfil.pacoteBytes << "B"
              << " lambda="    << perfil.lambda << "pkt/s"
@@ -324,86 +345,149 @@ main(int argc, char* argv[])
     MobilityHelper mobilityUe;
 
     if (!enableMobility)
+{
+    // ============================================================
+    // MODO DE MOBILIDADE FIXA
+    //
+    // Os UEs permanecem parados durante toda a simulação.
+    // Esse modo é utilizado para garantir reprodutibilidade dos
+    // experimentos e permitir comparar diferentes escalonadores
+    // exatamente nas mesmas condições de propagação.
+    // ============================================================
+
+    mobilityUe.SetMobilityModel("ns3::ConstantPositionMobilityModel");
+    mobilityUe.Install(ueNodes);
+
+    // ------------------------------------------------------------
+    // Vetor que armazenará as distâncias informadas manualmente
+    // pelo usuário através do parâmetro:
+    //
+    // --ueDistances=10,250,260
+    //
+    // Caso o vetor permaneça vazio, será utilizado o posicionamento
+    // automático já existente no simulador.
+    // ------------------------------------------------------------
+    std::vector<double> distanciasManuais;
+
+    // ------------------------------------------------------------
+    // Verifica se o usuário informou distâncias manualmente.
+    //
+    // Exemplo:
+    // --ueDistances=10,250,260
+    //
+    // A string é convertida para:
+    //
+    // distanciasManuais[0] = 10
+    // distanciasManuais[1] = 250
+    // distanciasManuais[2] = 260
+    // ------------------------------------------------------------
+    if (!ueDistances.empty())
     {
-        // Modo fixo: posições determinísticas e reprodutíveis
-        mobilityUe.SetMobilityModel("ns3::ConstantPositionMobilityModel");
-        mobilityUe.Install(ueNodes);
+        std::stringstream ss(ueDistances);
+        std::string token;
 
-        for (uint32_t i = 0; i < ueNodes.GetN(); ++i)
+        while (std::getline(ss, token, ','))
         {
-            // Distribui UEs de 10m até mobilityBounds metros do gNB
-            // Para 9 UEs:  10m, 27m, 44m, ..., 150m (aprox)
-            // Para 30 UEs: 10m, 16m, 22m, ..., 200m (aprox)
-            uint32_t divisor = static_cast<uint32_t>(
-                std::max(1u, static_cast<uint32_t>(ueNumPergNb) - 1u));
-            double dist = 10.0 + (mobilityBounds - 10.0) / divisor * i;
-
-            ueNodes.Get(i)->GetObject<MobilityModel>()
-                ->SetPosition(Vector(dist, 0.0, 1.5));
-            // Altura 1.5m: dispositivo móvel ao nível do usuário
+            distanciasManuais.push_back(std::stod(token));
         }
 
-        NS_LOG_INFO("Mobilidade: FIXA — " << ueNumPergNb
-                 << " UEs de 10m a " << mobilityBounds << "m");
+        // --------------------------------------------------------
+        // Garante que exista exatamente uma distância para cada UE.
+        //
+        // Exemplo:
+        //
+        // 3 UEs
+        // --ueDistances=10,250,260      -> OK
+        //
+        // 3 UEs
+        // --ueDistances=10,250          -> ERRO
+        // --------------------------------------------------------
+        NS_ABORT_MSG_IF(
+            distanciasManuais.size() != ueNodes.GetN(),
+            "ueDistances deve conter exatamente uma distância por UE.");
     }
-    else
+
+    // ------------------------------------------------------------
+    // Posicionamento dos UEs
+    // ------------------------------------------------------------
+    for (uint32_t i = 0; i < ueNodes.GetN(); ++i)
     {
-        // Modo dinâmico — preparado para trabalho futuro
-        if (mobilityModel == "random_walk")
+        // Número utilizado para distribuir igualmente os UEs
+        // quando o posicionamento automático estiver ativo.
+        uint32_t divisor = static_cast<uint32_t>(
+            std::max(1u, static_cast<uint32_t>(ueNumPergNb) - 1u));
+
+        double dist;
+
+        // --------------------------------------------------------
+        // MODO MANUAL
+        //
+        // Utiliza exatamente a distância informada pelo usuário.
+        //
+        // Exemplo:
+        //
+        // UE0 -> 10 m
+        // UE1 -> 250 m
+        // UE2 -> 260 m
+        // --------------------------------------------------------
+        if (!distanciasManuais.empty())
         {
-            // Random Walk 2D: movimento aleatório dentro de área
-            // Modelo mais usado em benchmarks 5G de literatura
-            mobilityUe.SetMobilityModel(
-                "ns3::RandomWalk2dMobilityModel",
-                "Bounds",
-                RectangleValue(Rectangle(
-                    -mobilityBounds, mobilityBounds,
-                    -mobilityBounds, mobilityBounds)),
-                "Speed",
-                StringValue("ns3::UniformRandomVariable[Min="
-                    + std::to_string(mobilitySpeedMin)
-                    + "|Max="
-                    + std::to_string(mobilitySpeedMax) + "]"),
-                "Distance",
-                DoubleValue(mobilityBounds / 4.0));
-        }
-        else if (mobilityModel == "random_waypoint")
-        {
-            // Random Waypoint: UE escolhe destino aleatório
-            // Mais realista para usuários em movimento urbano
-            mobilityUe.SetMobilityModel(
-                "ns3::RandomWaypointMobilityModel",
-                "Speed",
-                StringValue("ns3::UniformRandomVariable[Min="
-                    + std::to_string(mobilitySpeedMin)
-                    + "|Max="
-                    + std::to_string(mobilitySpeedMax) + "]"),
-                "Pause",
-                StringValue("ns3::ConstantRandomVariable[Constant=0]"),
-                "PositionAllocator",
-                StringValue("ns3::RandomRectanglePositionAllocator"));
+            dist = distanciasManuais[i];
         }
         else
         {
-            NS_ABORT_MSG("mobilityModel inválido: '" << mobilityModel
-                << "'. Use: random_walk | random_waypoint");
+            // ----------------------------------------------------
+            // MODO AUTOMÁTICO (comportamento original)
+            //
+            // Distribui os UEs igualmente entre 10 m e
+            // mobilityBounds.
+            //
+            // Exemplo:
+            //
+            // mobilityBounds = 200 m
+            // 3 UEs
+            //
+            // UE0 -> 10 m
+            // UE1 -> 105 m
+            // UE2 -> 200 m
+            //
+            // Esse comportamento permanece exatamente igual ao
+            // existente antes desta modificação.
+            // ----------------------------------------------------
+            dist = 10.0 + (mobilityBounds - 10.0) / divisor * i;
         }
 
-        // Posição inicial aleatória dentro da área circular
-        mobilityUe.SetPositionAllocator(
-            "ns3::RandomDiscPositionAllocator",
-            "X",   StringValue("0.0"),
-            "Y",   StringValue("0.0"),
-            "Rho", StringValue("ns3::UniformRandomVariable[Min=10|Max="
-                + std::to_string(static_cast<int>(mobilityBounds)) + "]"));
+        // Posiciona o UE no eixo X.
+        // O gNB permanece na origem (0,0).
+        // Todos os UEs permanecem no eixo Y = 0.
+        // Altura = 1.5 m (terminal do usuário).
+        ueNodes.Get(i)->GetObject<MobilityModel>()
+            ->SetPosition(Vector(dist, 0.0, 1.5));
 
-        mobilityUe.Install(ueNodes);
-
-        NS_LOG_INFO("Mobilidade: DINAMICA — modelo=" << mobilityModel
-                 << " speed=[" << mobilitySpeedMin
-                 << "," << mobilitySpeedMax << "]m/s"
-                 << " bounds=" << mobilityBounds << "m");
+        // Log para conferência da posição atribuída.
+        NS_LOG_INFO("UE" << i
+                    << " distância configurada = "
+                    << dist << " m");
     }
+
+    // ------------------------------------------------------------
+    // Informa no log qual modo foi utilizado.
+    // Isso facilita reproduzir experimentos posteriormente.
+    // ------------------------------------------------------------
+    if (!ueDistances.empty())
+    {
+        NS_LOG_INFO("Mobilidade: FIXA MANUAL"
+                    << " | distâncias = "
+                    << ueDistances);
+    }
+    else
+    {
+        NS_LOG_INFO("Mobilidade: FIXA AUTOMÁTICA"
+                    << " | UEs = " << ueNumPergNb
+                    << " | intervalo = [10 m, "
+                    << mobilityBounds << " m]");
+    }
+}
 
     // --- 3.4 Configurar EPC e helpers NR ---
     // NrPointToPointEpcHelper: simula o core 5G com link P2P
@@ -840,18 +924,274 @@ main(int argc, char* argv[])
     //          Bloco 8 — Resumo consolidado
     // --------------------------------------------------------
 
-    // Temporário: executa simulação mínima para validar blocos
-    Simulator::Stop(Seconds(1.0));
+    // --------------------------------------------------------
+    // BLOCO 7: FLOWMONITOR + CSV DE SAÍDA
+    //
+    // Instala o FlowMonitor, executa a simulação completa,
+    // e extrai as métricas por fluxo: throughput, delay médio,
+    // delay p99, jitter, PLR, PDR. Calcula o Índice de Jain
+    // sobre vazão agregando throughput por UE — contribuição
+    // original desta dissertação (ver CalcularJainVazao em
+    // simulacao-vj5g-utils.h).
+    //
+    // Mapeamento fluxo → UE: cada fluxo UDP usa uma porta
+    // única (portBase + ueIdx*flowsPorUe + flowIdx, definida
+    // no Bloco 5). O FlowMonitor identifica fluxos por
+    // 5-tupla (IP origem, IP destino, porta origem, porta
+    // destino, protocolo) — usamos a porta de destino para
+    // recuperar o índice do UE.
+    //
+    // Mapeamento RNTI → UE: o ns-3 atribui RNTI sequencialmente
+    // conforme os UEs são conectados via AttachToGnb (Bloco 3,
+    // executado em ordem de 0 a N-1). Premissa: RNTI = ueIdx+1.
+    // Esta é uma suposição documentada, válida para o cenário
+    // single-cell desta dissertação (sem handover).
+    // --------------------------------------------------------
+
+    // --- 7.1 Instalar FlowMonitor ---
+    // Deve ser instalado antes do Simulator::Run() para
+    // capturar todos os pacotes desde o início da simulação.
+    FlowMonitorHelper flowmonHelper;
+    Ptr<FlowMonitor> monitor = flowmonHelper.InstallAll();
+
+    // Bins de 1ms para delay e jitter — permite cálculo preciso
+// do delay p99 no Bloco 7.5 (CalcularPercentilDelay).
+// Padrão do FlowMonitor é 100ms/bin, insuficiente para URLLC.
+monitor->SetAttribute("DelayBinWidth",  DoubleValue(0.001));
+monitor->SetAttribute("JitterBinWidth", DoubleValue(0.001));
+
+    // --- 7.2 Executar a simulação completa ---
+   // Registra início do tempo real para a barra de progresso
+g_inicioReal = std::chrono::steady_clock::now();
+NS_LOG_UNCOND("[VJ5G] Simulação iniciada."
+           << " scheduler=" << schedulerMode
+           << " perfil=" << trafficProfile
+           << " ues=" << ueNumPergNb
+           << " simTime=" << simTime.GetSeconds() << "s");
+
+// Agenda a barra de progresso — atualiza a cada 100ms simulados
+Simulator::Schedule(Seconds(0.0), &ExibirBarraDeProgresso, simTime);
+   
+    Simulator::Stop(simTime);
     Simulator::Run();
 
-    NS_LOG_UNCOND("SINR coletado para " << g_sinrAcumulado.size()
-               << " UEs (RNTIs)");
+ImprimirBarraDeProgressoFinal();
+NS_LOG_UNCOND("[VJ5G] Simulação finalizada. Processando resultados...");
+    
+    // --- 7.3 Processar resultados do FlowMonitor ---
+    monitor->CheckForLostPackets();
+
+    Ptr<Ipv4FlowClassifier> classifier =
+        DynamicCast<Ipv4FlowClassifier>(flowmonHelper.GetClassifier());
+    FlowMonitor::FlowStatsContainer stats = monitor->GetFlowStats();
+
+    // Tempo ativo de tráfego — usado para calcular throughput
+    // em Mbps a partir dos bytes recebidos
+    double activeSeconds = (simTime - udpAppStartTime).GetSeconds();
+
+    // Vetor de throughput por UE — usado no cálculo do Jain
+    // sobre vazão (Bloco 7.5). Inicializado com zero para
+    // todos os UEs, mesmo que não recebam nenhum pacote.
+    std::vector<double> throughputPorUe(ueNodes.GetN(), 0.0);
+
+    // --- 7.4 Abrir CSV de saída e escrever cabeçalho ---
+    std::ofstream flowCsv;
+    if (enableFlowSummaryCsv)
+    {
+        flowCsv.open(flowSummaryCsvPath);
+        flowCsv << "scheduler,traffic_profile,num_ues,seed,"
+                << "bandwidth_mhz,flow_id,ue_id,"
+                << "throughput_mbps,delay_mean_ms,delay_p99_ms,"
+                << "jitter_mean_ms,plr_pct,pdr_pct,"
+                << "tx_packets,rx_packets,lost_packets,"
+                << "sinr_mean_db,distance_gnb_m\n";
+    }
+
+    // --- 7.5 Percorrer cada fluxo e extrair métricas ---
+    for (const auto& flowPair : stats)
+    {
+        FlowId flowId = flowPair.first;
+        const FlowMonitor::FlowStats& flowStats = flowPair.second;
+
+        Ipv4FlowClassifier::FiveTuple tuple =
+            classifier->FindFlow(flowId);
+
+        // Recupera o índice do UE a partir da porta de destino.
+        // Porta = portBase + ueIdx*flowsPorUe + flowIdx
+        // → ueIdx = (porta - portBase) / flowsPorUe
+        uint16_t destPort = tuple.destinationPort;
+        uint32_t ueIdx = (destPort - portBase) / perfil.flowsPorUe;
+
+        // Ignora fluxos fora do intervalo UDP da simulação
+// (fluxos de controle do EPC: ARP, DHCP, sinalização)
+if (destPort < portBase ||
+    destPort >= portBase +
+        static_cast<uint16_t>(ueNumPergNb * perfil.flowsPorUe))
+{
+    continue;
+}
+
+        // Throughput em Mbps: bytes recebidos × 8 / tempo ativo / 1e6
+        double throughputMbps = 0.0;
+        if (activeSeconds > 0.0)
+        {
+            throughputMbps = (flowStats.rxBytes * 8.0)
+                            / activeSeconds / 1e6;
+        }
+
+        // Acumula throughput por UE (um UE pode ter múltiplos
+        // fluxos — ex: eMBB com flowsPorUe=2)
+        if (ueIdx < throughputPorUe.size())
+        {
+            throughputPorUe[ueIdx] += throughputMbps;
+        }
+
+        // Delay médio em ms
+        double delayMeanMs = 0.0;
+        if (flowStats.rxPackets > 0)
+        {
+            delayMeanMs = (flowStats.delaySum.GetSeconds()
+                          / flowStats.rxPackets) * 1000.0;
+        }
+
+        // Delay p99 via histograma (CalcularPercentilDelay
+        // definida em simulacao-vj5g-utils.h)
+        double delayP99Ms =
+            CalcularPercentilDelay(flowStats.delayHistogram, 0.99);
+
+        // Jitter médio em ms
+        double jitterMeanMs = 0.0;
+        if (flowStats.rxPackets > 1)
+        {
+            jitterMeanMs = (flowStats.jitterSum.GetSeconds()
+                           / (flowStats.rxPackets - 1)) * 1000.0;
+        }
+
+        // PLR (Packet Loss Ratio) e PDR (Packet Delivery Ratio)
+        double plrPct = 0.0;
+        double pdrPct = 0.0;
+        if (flowStats.txPackets > 0)
+        {
+            plrPct = (static_cast<double>(flowStats.lostPackets)
+                     / flowStats.txPackets) * 100.0;
+            pdrPct = (static_cast<double>(flowStats.rxPackets)
+                     / flowStats.txPackets) * 100.0;
+        }
+
+        // SINR médio do UE — recuperado de g_sinrAcumulado
+        // (preenchido pelo SinrCallback durante a simulação).
+        // RNTI = ueIdx + 1 (premissa documentada no cabeçalho).
+        double sinrMeanDb = 0.0;
+        uint16_t rnti = static_cast<uint16_t>(ueIdx + 1);
+        auto sinrIt = g_sinrAcumulado.find(rnti);
+        if (sinrIt != g_sinrAcumulado.end()
+            && sinrIt->second.second > 0)
+        {
+            sinrMeanDb = sinrIt->second.first / sinrIt->second.second;
+        }
+
+        // Distância UE-gNB — calculada no Bloco 6.2
+        double distanceM = 0.0;
+        if (ueIdx < distanciasUe.size())
+        {
+            distanceM = distanciasUe[ueIdx];
+        }
+
+        NS_LOG_INFO("Flow " << flowId
+                 << " UE" << ueIdx
+                 << " thr=" << throughputMbps << "Mbps"
+                 << " delay=" << delayMeanMs << "ms"
+                 << " p99=" << delayP99Ms << "ms"
+                 << " plr=" << plrPct << "%");
+
+        if (enableFlowSummaryCsv)
+        {
+            flowCsv << schedulerMode << ","
+                    << trafficProfile << ","
+                    << ueNumPergNb << ","
+                    << seed << ","
+                    << (bandwidth / 1e6) << ","
+                    << flowId << ","
+                    << ueIdx << ","
+                    << throughputMbps << ","
+                    << delayMeanMs << ","
+                    << delayP99Ms << ","
+                    << jitterMeanMs << ","
+                    << plrPct << ","
+                    << pdrPct << ","
+                    << flowStats.txPackets << ","
+                    << flowStats.rxPackets << ","
+                    << flowStats.lostPackets << ","
+                    << sinrMeanDb << ","
+                    << distanceM << "\n";
+        }
+    }
+
+    if (enableFlowSummaryCsv)
+    {
+        flowCsv.close();
+        NS_LOG_INFO("CSV de fluxos salvo em: " << flowSummaryCsvPath);
+    }
+
+    // --- 7.6 Calcular Índice de Jain sobre vazão ---
+    // Contribuição original — agrega throughput por UE
+    // (não por fluxo individual) e aplica a fórmula de Jain.
+    // Nota: Jain=1.0 é esperado quando a demanda da aplicação
+// (lambda × pacoteBytes) é inferior à capacidade do canal
+// para todos os UEs. Nesse caso o gargalo é a aplicação,
+// não o scheduler. Para observar Jain < 1, é necessário
+// que a carga ofertada exceda a capacidade de alguns UEs
+// (ex: scheduler MR com UEs distantes, ou lambda elevado).
+    double jainVazao = CalcularJainVazao(throughputPorUe);
+
+    double throughputAgregadoMbps = 0.0;
+    for (double thr : throughputPorUe)
+    {
+        throughputAgregadoMbps += thr;
+    }
+
+    NS_LOG_UNCOND("[RESULT] scheduler=" << schedulerMode
+               << " perfil=" << trafficProfile
+               << " throughput_agregado_mbps=" << throughputAgregadoMbps
+               << " jain_vazao=" << jainVazao
+               << " ues=" << ueNumPergNb);
+
+// Relatório visual no console — resume os resultados principais
+std::cout << std::endl;
+ImprimirSeparador('=', 52);
+std::cout << "         RESULTADOS VJ5G - SIMULAÇÃO 5G NR" << std::endl;
+ImprimirSeparador('=', 52);
+std::cout << std::fixed << std::setprecision(2);
+std::cout << "Scheduler           : " << schedulerMode << std::endl;
+std::cout << "Perfil de tráfego   : " << trafficProfile << std::endl;
+std::cout << "Descrição           : " << perfil.descricao << std::endl;
+std::cout << "UEs                 : " << ueNumPergNb << std::endl;
+std::cout << "Seed                : " << seed << std::endl;
+std::cout << "Bandwidth           : " << bandwidth/1e6 << " MHz" << std::endl;
+std::cout << "Tempo simulado      : " << simTime.GetSeconds() << " s" << std::endl;
+ImprimirSeparador('-', 52);
+std::cout << "Throughput agregado : " << throughputAgregadoMbps << " Mbps" << std::endl;
+std::cout << "Índice de Jain      : " << std::setprecision(4)
+          << jainVazao << std::endl;
+std::cout << "SINR coletado       : " << g_sinrAcumulado.size()
+          << " UEs" << std::endl;
+ImprimirSeparador('=', 52);
+
+// Linha de resultado estruturada para parsing pelo orquestrador Python
+NS_LOG_UNCOND("[RESULT]"
+           << " scheduler=" << schedulerMode
+           << " perfil=" << trafficProfile
+           << " throughput_mbps=" << throughputAgregadoMbps
+           << " jain_vazao=" << jainVazao
+           << " ues=" << ueNumPergNb
+           << " seed=" << seed);
 
     Simulator::Destroy();
 
-    NS_LOG_UNCOND("Blocos 1-6 OK. Arquivo: " << outputDir
-               << " scheduler=" << schedulerMode
-               << " perfil=" << perfil.nome);
+    // --------------------------------------------------------
+    // FIM DO BLOCO 7
+    // Próximo: Bloco 8 — Resumo consolidado
+    // --------------------------------------------------------
 
     return 0;
 } // fim do main

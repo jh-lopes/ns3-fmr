@@ -20,12 +20,14 @@
 
 #include "ns3/core-module.h"
 #include "ns3/nr-module.h"
-
+#include "ns3/histogram.h"
+#include <chrono>
 #include <algorithm>
 #include <cmath>
 #include <map>
 #include <string>
 #include <utility>
+#include <vector>
 
 using namespace ns3;
 
@@ -160,6 +162,84 @@ ObterPerfilDeTrafego(const std::string& trafficProfile)
 // Mapa: rnti → {soma_sinr_db, contagem_amostras}
 inline std::map<uint16_t, std::pair<double, uint32_t>> g_sinrAcumulado;
 
+// Ponto de início da simulação em tempo real (wall-clock).
+// Preenchido em main() antes do Simulator::Run().
+// Usado pela barra de progresso para mostrar tempo real decorrido.
+inline std::chrono::steady_clock::time_point g_inicioReal;
+
+// ------------------------------------------------------------
+// ExibirBarraDeProgresso()
+//
+// Agendada recursivamente a cada 100ms de tempo simulado via
+// Simulator::Schedule. Imprime na mesma linha (\r) sem criar
+// novas linhas — atualiza a barra visualmente no terminal.
+// Inclui tempo real decorrido (wall-clock) além do progresso
+// percentual do tempo simulado.
+// ------------------------------------------------------------
+inline void
+ExibirBarraDeProgresso(Time simTime)
+{
+    double tempoAtual = Simulator::Now().GetSeconds();
+    double tempoTotal = simTime.GetSeconds();
+    double progresso  = tempoTotal > 0.0
+                        ? std::min(tempoAtual / tempoTotal, 1.0)
+                        : 1.0;
+
+    // Tempo real decorrido desde o início da simulação
+    auto agora = std::chrono::steady_clock::now();
+    double segundosReais = std::chrono::duration<double>(
+        agora - g_inicioReal).count();
+
+    const int largura = 38;
+    int posicao = static_cast<int>(largura * progresso);
+
+    std::cout << "\r[VJ5G] [";
+    for (int i = 0; i < largura; ++i)
+    {
+        if      (i < posicao)  std::cout << "=";
+        else if (i == posicao) std::cout << ">";
+        else                   std::cout << " ";
+    }
+    std::cout << "] "
+              << std::setw(3) << static_cast<int>(progresso * 100.0)
+              << "% | sim="
+              << std::fixed << std::setprecision(1)
+              << tempoAtual << "s | real="
+              << std::setprecision(0) << segundosReais << "s"
+              << std::flush;
+
+    // Agenda a próxima atualização se ainda há tempo simulado restante
+    if (Simulator::Now() + MilliSeconds(100) < simTime)
+    {
+        Simulator::Schedule(MilliSeconds(100),
+                            &ExibirBarraDeProgresso, simTime);
+    }
+}
+
+// Garante que a barra termine visualmente em 100%
+inline void
+ImprimirBarraDeProgressoFinal()
+{
+    auto agora = std::chrono::steady_clock::now();
+    double segundosReais = std::chrono::duration<double>(
+        agora - g_inicioReal).count();
+
+    const int largura = 38;
+    std::cout << "\r[VJ5G] [";
+    for (int i = 0; i < largura; ++i) std::cout << "=";
+    std::cout << "] 100%"
+              << " | real=" << std::fixed << std::setprecision(0)
+              << segundosReais << "s" << std::endl;
+}
+
+// Linha separadora visual para o relatório de console
+inline void
+ImprimirSeparador(char c = '-', int largura = 52)
+{
+    for (int i = 0; i < largura; ++i) std::cout << c;
+    std::cout << std::endl;
+}
+
 // ------------------------------------------------------------
 // SinrCallback()
 //
@@ -187,6 +267,119 @@ SinrCallback(uint16_t cellId,
     // Acumula soma e contagem para cálculo da média posterior
     g_sinrAcumulado[rnti].first  += sinrDb;
     g_sinrAcumulado[rnti].second += 1;
+}
+
+// ============================================================
+// BLOCO 7A: FUNÇÕES AUXILIARES DE MÉTRICAS
+//
+// Calculam percentil de delay e Índice de Jain sobre vazão.
+// Definidas aqui para serem reutilizáveis e testáveis
+// separadamente do código de simulação no main().
+// ============================================================
+
+// ------------------------------------------------------------
+// CalcularPercentilDelay()
+//
+// Calcula o percentil de delay a partir do histograma
+// acumulado pelo FlowMonitor (ns3::Histogram).
+//
+// O histograma divide o delay observado em "bins" (faixas)
+// de largura fixa, cada um com uma contagem de pacotes que
+// caíram naquela faixa. Para achar o percentil P:
+//   1. Soma o total de pacotes em todos os bins
+//   2. Percorre os bins em ordem, acumulando a contagem
+//   3. Para quando a soma acumulada atinge P% do total
+//   4. Retorna o limite superior do bin onde isso ocorreu
+//
+// Essa é uma aproximação — a precisão depende da largura
+// do bin (BinWidth do FlowMonitor, padrão 100ms). Para os
+// fins desta dissertação, identificar se o delay ultrapassa
+// o budget de 100ms do URLLC é suficiente.
+//
+// Parâmetros:
+//   hist      → histograma de delay do FlowMonitor::FlowStats
+//   percentil → valor entre 0.0 e 1.0 (ex: 0.99 para p99)
+// ------------------------------------------------------------
+inline double
+CalcularPercentilDelay(const Histogram& hist, double percentil)
+{
+    uint32_t nBins = hist.GetNBins();
+    if (nBins == 0)
+    {
+        return 0.0;
+    }
+
+    // Soma total de pacotes em todos os bins
+    double total = 0.0;
+    for (uint32_t i = 0; i < nBins; ++i)
+    {
+        total += hist.GetBinCount(i);
+    }
+
+    if (total == 0.0)
+    {
+        return 0.0;
+    }
+
+    // Percorre acumulando até atingir o percentil desejado
+    double acumulado = 0.0;
+    for (uint32_t i = 0; i < nBins; ++i)
+    {
+        acumulado += hist.GetBinCount(i);
+        if (acumulado / total >= percentil)
+        {
+            // GetBinEnd retorna o limite superior do bin
+            // (em segundos, no FlowMonitor) — convertido para ms
+            return hist.GetBinEnd(i) * 1000.0;
+        }
+    }
+
+    // Caso o percentil não seja atingido (não deveria ocorrer
+    // com total > 0), retorna o fim do último bin
+    return hist.GetBinEnd(nBins - 1) * 1000.0;
+}
+
+// ------------------------------------------------------------
+// CalcularJainVazao()
+//
+// Calcula o Índice de Jain a partir das vazões individuais
+// por UE — contribuição original desta dissertação.
+//
+// Fórmula: J = (Σ thr_i)² / (n × Σ thr_i²)
+//
+// Diferente do trabalho do Diego (fmr-compara-qos.cc), que
+// calcula o Jain sobre RBGs alocados, aqui o índice mede
+// equidade na EXPERIÊNCIA do usuário — quanto throughput
+// cada UE efetivamente recebeu, não apenas quantos recursos
+// foram alocados a ele.
+//
+// J = 1   → distribuição perfeitamente equitativa
+// J = 1/n → máxima desigualdade (um UE concentra tudo)
+// ------------------------------------------------------------
+inline double
+CalcularJainVazao(const std::vector<double>& throughputs)
+{
+    if (throughputs.empty())
+    {
+        return 0.0;
+    }
+
+    double soma = 0.0;
+    double somaQuadrados = 0.0;
+
+    for (double thr : throughputs)
+    {
+        soma += thr;
+        somaQuadrados += thr * thr;
+    }
+
+    if (somaQuadrados == 0.0)
+    {
+        return 0.0; // evita divisão por zero se todos os UEs tiverem thr=0
+    }
+
+    double n = static_cast<double>(throughputs.size());
+    return (soma * soma) / (n * somaQuadrados);
 }
 
 #endif // SIMULACAO_VJ5G_UTILS_H
