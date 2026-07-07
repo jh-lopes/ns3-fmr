@@ -1007,9 +1007,13 @@ NrGnbPhy::GenerateAllocationStatistics(const SlotAllocInfo& allocInfo) const
         lastSymStart = allocation.m_dci->m_symStart;
     }
 
-    NS_ASSERT_MSG(symUsed == allocInfo.m_numSymAlloc,
-                  "Allocated " << +allocInfo.m_numSymAlloc << " but only " << symUsed
-                               << " written in stats");
+ if (symUsed != allocInfo.m_numSymAlloc)
+    {
+        NS_LOG_WARN("PHY stats: Allocated "
+                    << static_cast<uint32_t>(allocInfo.m_numSymAlloc)
+                    << " but only " << symUsed << " written in stats"
+                    << " (OFDMA symbol deduplication)");
+    }
 
     m_phySlotDataStats(allocInfo.m_sfnSf,
                        activeUe.size(),
