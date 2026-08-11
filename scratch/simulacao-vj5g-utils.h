@@ -11,6 +11,9 @@
 //     (perfis eMBB, URLLC, mMTC)
 //   - g_sinrAcumulado + SinrCallback()
 //     (coleta de SINR por UE via trace do PHY)
+//   - g_bytesRecebidosPorUe + RxWindowCallback() + RegistrarJanela()
+//     (log de throughput/Jain por janela — Bloco 6B, alimenta os
+//     Pilares 1 e 2 do alfa dinâmico via Fronteira de Pareto)
 //
 // Autor: Júlio Henrique da Silva Lopes — UFAC (2026)
 // ============================================================
@@ -24,6 +27,7 @@
 #include <chrono>
 #include <algorithm>
 #include <cmath>
+#include <fstream>
 #include <map>
 #include <string>
 #include <utility>
@@ -104,7 +108,7 @@ ObterPerfilDeTrafego(const std::string& trafficProfile)
             "Enhanced Mobile Broadband - foco em vazão (vídeo HD)",
             1500,                            // pacoteBytes
             1000,                            // lambda (pkt/s)
-            2,                               // flowsPorUe
+            1,                               // flowsPorUe
             NrEpsBearer::NGBR_LOW_LAT_EMBB, // QCI 70
             0                                // sem discard
         };
@@ -269,6 +273,156 @@ SinrCallback(uint16_t cellId,
     g_sinrAcumulado[rnti].second += 1;
 }
 
+// Declaração antecipada — a implementação está no Bloco 7A,
+// mais abaixo neste arquivo. RegistrarJanela() (Bloco 6B) reusa
+// esta função para não duplicar a fórmula de Jain entre a
+// métrica agregada de fim de simulação e a métrica por janela.
+inline double CalcularJainVazao(const std::vector<double>& throughputs);
+
+// ============================================================
+// BLOCO 6B: LOG POR JANELA DE TEMPO (throughput + Jain)
+//
+// Adicionado para viabilizar a "parte prática" combinada na
+// sessão: os Pilares 1 e 2 do alfa dinâmico via Fronteira de
+// Pareto (ver registro-sessao-alfa-dinamico-vj5g.md no projeto).
+//
+//   - Pilar 2 (ranqueamento por perfil eMBB): precisa contar
+//     quantas vezes cada scheduler atinge um ponto não-dominado
+//     na fronteira T×J. Isso exige uma série de pontos (T,J) por
+//     JANELA, não só o par agregado de fim de simulação que o
+//     Bloco 7 já produz.
+//   - Pilar 1 (alfa dinâmico): precisa da mesma série T×J por
+//     janela para prototipar, em Python, o recálculo da fronteira
+//     e o critério de Nash — ANTES de portar a lógica para dentro
+//     de um scheduler C++ novo no contrib/nr.
+//
+// Diferença deliberada em relação ao SlotCsv já existente: aquele
+// é um atributo interno da classe NrMacSchedulerOfdmaFmr (só
+// existe para schedulerMode=fmr_rl). Este log é observacional —
+// mede o que CHEGOU no UdpServer de cada UE via trace "Rx" — e
+// por isso funciona para QUALQUER schedulerMode (rr/pf/mr/qos/
+// fmr_rl) sem depender de nada interno ao scheduler.
+// ============================================================
+
+// Bytes recebidos acumulados por UE (soma de todos os flows do
+// UE) desde o início da simulação. Redimensionado em main()
+// logo após a criação dos UEs (Bloco 3.2).
+inline std::vector<uint64_t> g_bytesRecebidosPorUe;
+
+// Snapshot do acumulado no fechamento da última janela — usado
+// para isolar o delta de bytes recebidos DENTRO da janela atual.
+inline std::vector<uint64_t> g_bytesRecebidosUltimaJanela;
+
+// CSV de saída do log por janela. Global porque é escrito tanto
+// pelo callback periódico (RegistrarJanela) quanto fechado ao
+// final em main() — mesmo padrão de g_sinrAcumulado.
+inline std::ofstream g_windowCsv;
+
+// Contador de janelas já processadas nesta simulação.
+// Reiniciado implicitamente a cada execução do binário (processo
+// novo por rodada — não há necessidade de reset manual).
+inline uint32_t g_janelaId = 0;
+
+// ------------------------------------------------------------
+// RxWindowCallback()
+//
+// Conectada ao trace "Rx" de cada UdpServer instalado (um por
+// UE por flow — ver Bloco 5.2 em simulacao-vj5g.cc). O índice
+// do UE (ueIdx) é fixado no momento da conexão via
+// MakeBoundCallback.
+//
+// Assinatura corrigida: o trace "Rx" do ns3::UdpServer nesta
+// versão do ns-3 (5G-LENA NR v4.1 / ns-3.46) dispara com um
+// único argumento — Ptr<const Packet> — sem o endereço de
+// origem. A versão anterior desta função declarava um segundo
+// parâmetro (const Address&) que não existe na TracedCallback
+// real, causando erro de tipo incompatível em tempo de execução
+// ("Incompatible types... CallbackImpl<void,Ptr<Packet const>>").
+// ------------------------------------------------------------
+inline void
+RxWindowCallback(uint32_t ueIdx, Ptr<const Packet> packet)
+{
+    if (ueIdx < g_bytesRecebidosPorUe.size())
+    {
+        g_bytesRecebidosPorUe[ueIdx] += packet->GetSize();
+    }
+}
+
+// ------------------------------------------------------------
+// RegistrarJanela()
+//
+// Agendada recursivamente a cada windowSize de tempo simulado
+// (mesmo padrão recursivo de ExibirBarraDeProgresso). Calcula,
+// para a janela que acabou de fechar:
+//
+//   - throughput instantâneo por UE = delta de bytes / duração
+//     da janela (Mbps)
+//   - throughput agregado = soma dos throughputs por UE
+//   - Jain sobre esse vetor de throughputs por UE
+//
+// Esse par (throughput agregado, Jain) É exatamente o ponto que
+// alimenta a Fronteira de Pareto por slot usada no SEMISH — só
+// que agora gerado para qualquer scheduler, não só o FMR.
+// ------------------------------------------------------------
+inline void
+RegistrarJanela(Time windowSize,
+                 Time simTime,
+                 std::string schedulerMode,
+                 std::string trafficProfile,
+                 uint16_t ueNumPergNb,
+                 uint32_t seed,
+                 double bandwidthMhz)
+{
+    double windowSeconds = windowSize.GetSeconds();
+    std::vector<double> throughputPorUeJanela(g_bytesRecebidosPorUe.size(), 0.0);
+
+    for (size_t i = 0; i < g_bytesRecebidosPorUe.size(); ++i)
+    {
+        uint64_t delta =
+            g_bytesRecebidosPorUe[i] - g_bytesRecebidosUltimaJanela[i];
+        throughputPorUeJanela[i] =
+            (static_cast<double>(delta) * 8.0) / windowSeconds / 1e6; // Mbps
+        g_bytesRecebidosUltimaJanela[i] = g_bytesRecebidosPorUe[i];
+    }
+
+    double throughputAgregado = 0.0;
+    for (double thr : throughputPorUeJanela)
+    {
+        throughputAgregado += thr;
+    }
+
+    // Reutiliza a mesma função de Jain do Bloco 7A — evita duplicar
+    // a fórmula entre a métrica agregada e a métrica por janela.
+    double jainJanela = CalcularJainVazao(throughputPorUeJanela);
+
+    if (g_windowCsv.is_open())
+    {
+        g_windowCsv << schedulerMode << ","
+                    << trafficProfile << ","
+                    << ueNumPergNb << ","
+                    << seed << ","
+                    << bandwidthMhz << ","
+                    << g_janelaId << ","
+                    << Simulator::Now().GetSeconds() << ","
+                    << throughputAgregado << ","
+                    << jainJanela << "\n";
+    }
+
+    ++g_janelaId;
+
+    // Reagenda a próxima janela enquanto houver tempo simulado
+    // restante — mesmo critério de corte usado na barra de
+    // progresso, para não agendar uma janela que nunca fecha.
+    if (Simulator::Now() + windowSize < simTime)
+    {
+        Simulator::Schedule(windowSize,
+                            &RegistrarJanela,
+                            windowSize, simTime,
+                            schedulerMode, trafficProfile,
+                            ueNumPergNb, seed, bandwidthMhz);
+    }
+}
+
 // ============================================================
 // BLOCO 7A: FUNÇÕES AUXILIARES DE MÉTRICAS
 //
@@ -381,5 +535,22 @@ CalcularJainVazao(const std::vector<double>& throughputs)
     double n = static_cast<double>(throughputs.size());
     return (soma * soma) / (n * somaQuadrados);
 }
+
+// ============================================================
+// RESUMO POR UE — estrutura auxiliar para o Bloco 7
+//
+// Acumula métricas por UE durante o loop de fluxos (Bloco 7.5).
+// Preenchida incrementalmente — um UE pode ter múltiplos fluxos
+// (ex: eMBB com flowsPorUe=2). Usada para console e CSV.
+// ============================================================
+struct ResumoUe
+{
+    double   throughputMbps = 0.0; // soma dos fluxos do UE
+    double   delaySomaMs    = 0.0; // soma para calcular média
+    double   delayP99Ms     = 0.0; // máximo p99 entre os fluxos
+    uint64_t txPackets      = 0;
+    uint64_t rxPackets      = 0;
+    uint64_t lostPackets    = 0;
+};
 
 #endif // SIMULACAO_VJ5G_UTILS_H
