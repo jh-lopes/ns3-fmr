@@ -28,6 +28,12 @@
 //       Pilares 1 (alfa dinâmico) e 2 (ranqueamento eMBB) da
 //       Fronteira de Pareto (ver registro-sessao-alfa-dinamico-
 //       vj5g.md no projeto)
+//   11. Log de RBG por UE por slot (--EnableCommonSlotCsv) —
+//       liga um atributo NATIVO da classe base
+//       NrMacSchedulerOfdma (não é código novo desta
+//       dissertação), válido para rr/pf/mr/qos. Permite
+//       comparar Jain sobre RBGs (estilo Diego) com Jain sobre
+//       vazão (Bloco 7) lado a lado
 //
 // Organização do código:
 //   - simulacao-vj5g-utils.h contém structs e funções auxiliares
@@ -135,6 +141,18 @@ main(int argc, char* argv[])
     bool        slotCsvAppend  = false;
     bool        slotCsvFlush   = false;
 
+    // CSV de RBG por UE por slot — recurso NATIVO da classe base
+    // NrMacSchedulerOfdma (contrib/nr/model/nr-mac-scheduler-ofdma.cc,
+    // atributos EnableCommonSlotCsv/CommonSlotCsvPath/...). Funciona
+    // para rr/pf/mr/qos, que usam o AssignDLRBG() padrão da classe
+    // base. NÃO funciona para fmr_rl, que sobrescreve AssignDLRBG()
+    // com sua própria lógica e usa EnableSlotCsv/SlotCsvPath (acima)
+    // em vez deste. Colunas do CSV gerado:
+    // time_s,beam_id,rnti,dl_mcs,buf_req,alloc_rbg
+    bool        enableCommonSlotCsv  = false;
+    std::string commonSlotCsvPath    = "slot_log_common.csv";
+    bool        commonSlotCsvAppend  = false;
+
     bool        enableFlowSummaryCsv = false;
     std::string flowSummaryCsvPath   = "flow_summary.csv";
 
@@ -232,6 +250,15 @@ main(int argc, char* argv[])
     cmd.AddValue("SlotCsvPath",          "Caminho do slot CSV",     slotCsvPath);
     cmd.AddValue("SlotCsvAppend",        "Append no slot CSV",      slotCsvAppend);
     cmd.AddValue("SlotCsvFlush",         "Flush no slot CSV",       slotCsvFlush);
+    cmd.AddValue("EnableCommonSlotCsv",
+                 "Ativa CSV de RBG por UE por slot (rr/pf/mr/qos)",
+                 enableCommonSlotCsv);
+    cmd.AddValue("CommonSlotCsvPath",
+                 "Caminho do CSV de RBG por UE",
+                 commonSlotCsvPath);
+    cmd.AddValue("CommonSlotCsvAppend",
+                 "Append no CSV de RBG por UE",
+                 commonSlotCsvAppend);
     cmd.AddValue("EnableFlowSummaryCsv", "Ativa CSV de fluxos",    enableFlowSummaryCsv);
     cmd.AddValue("FlowSummaryCsvPath",   "Caminho do flow CSV",    flowSummaryCsvPath);
     cmd.AddValue("EnableUeSnapshotCsv",  "Ativa snapshot de UE",   enableUeSnapshotCsv);
@@ -622,6 +649,29 @@ main(int argc, char* argv[])
         NS_ABORT_MSG("schedulerMode inválido: '" << schedulerMode
             << "'. Use: rr | pf | mr | qos | fmr_rl");
     }
+
+    // --- 4.1 CSV de RBG por UE por slot (fora do if/else acima) ---
+    //
+    // EnableCommonSlotCsv é um atributo da classe BASE
+    // NrMacSchedulerOfdma (contrib/nr/model/nr-mac-scheduler-
+    // ofdma.cc), herdado por rr/pf/mr/qos/fmr_rl igualmente —
+    // por isso é aplicado uma única vez aqui, fora da cadeia
+    // if/else, em vez de duplicado em cada branch.
+    //
+    // Só produz saída de fato para rr/pf/mr/qos: esses usam o
+    // AssignDLRBG() padrão da classe base, que chama
+    // WriteCommonSlotCsv() internamente (nr-mac-scheduler-
+    // ofdma.cc, linha 595). O fmr_rl sobrescreve AssignDLRBG()
+    // com sua própria implementação (nr-mac-scheduler-ofdma-
+    // fmr.cc, linha 804) e usa EnableSlotCsv/SlotCsvPath (Bloco
+    // 4, branch fmr_rl acima) em vez deste — setar este atributo
+    // para fmr_rl não quebra nada, só não gera arquivo.
+    nrHelper->SetSchedulerAttribute(
+        "EnableCommonSlotCsv", BooleanValue(enableCommonSlotCsv));
+    nrHelper->SetSchedulerAttribute(
+        "CommonSlotCsvPath", StringValue(commonSlotCsvPath));
+    nrHelper->SetSchedulerAttribute(
+        "CommonSlotCsvAppend", BooleanValue(commonSlotCsvAppend));
 
     // --------------------------------------------------------
     // FIM DO BLOCO 4

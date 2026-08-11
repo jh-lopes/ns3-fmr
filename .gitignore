@@ -58,3 +58,16 @@ pesquisa/resultados/
 
 # Arquivo de lock gerado automaticamente a cada build do ns-3
 .lock-ns3_linux_build
+
+# Artefatos de build
+.lock-ns3_linux_build
+
+# Saídas de teste/simulação (nunca versionar resultados)
+flow_mr_*.csv
+log_mcs.txt
+resultados-5g/
+pesquisa/resultados/
+
+# Python
+__pycache__/
+*.pyc
