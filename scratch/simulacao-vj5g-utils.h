@@ -161,10 +161,31 @@ ObterPerfilDeTrafego(const std::string& trafficProfile)
 // da simulação para calcular as médias por UE.
 // ============================================================
 
-// Armazena acumulado de SINR por RNTI do UE.
-// rnti (uint16_t) → identificador único do UE na célula
-// Mapa: rnti → {soma_sinr_db, contagem_amostras}
-inline std::map<uint16_t, std::pair<double, uint32_t>> g_sinrAcumulado;
+// Armazena acumulado de SINR por ÍNDICE DO UE (ueIdx, a ordem de criação
+// do nó — a mesma usada em todo o resto do código: distanciasUe[ueIdx],
+// resumoPorUe[ueIdx] etc).
+//
+// CORREÇÃO (12/ago/2026): antes essa tabela era indexada por RNTI, com
+// o código de leitura assumindo rnti = ueIdx + 1. Um diagnóstico real
+// (rodada com 10 UEs) mostrou que os RNTIs de verdade, atribuídos pela
+// RRC do 5G-LENA, NÃO são sequenciais a partir de 1 — nessa rodada saíram
+// "1 2 3 4 5 6 11 12 13 14" (pulou de 6 para 11). Isso fazia os primeiros
+// UEs acertarem por coincidência e os últimos lerem SINR errado (ou 0,
+// quando o RNTI assumido nem existia no mapa). A correção conecta o
+// trace com MakeBoundCallback, amarrando o ueIdx real no momento da
+// conexão (ver Bloco 6.1 em simulacao-vj5g.cc) — não depende mais de
+// nenhuma suposição sobre a numeração de RNTI.
+// Mapa: ueIdx → {soma_sinr_db, contagem_amostras}
+inline std::map<uint32_t, std::pair<double, uint32_t>> g_sinrAcumulado;
+
+// NOVO (12/ago/2026): mapa ueIdx → RNTI real, populado no mesmo lugar
+// (SinrCallback), que já recebe os dois valores de forma confiável. Serve
+// pra exportar o RNTI de cada UE no ue_summary.csv, permitindo cruzar
+// (em pós-processamento Python) com o log nativo do 5G-LENA
+// slot_log_common.csv (--EnableCommonSlotCsv), que é indexado por RNTI e
+// tem o RBG alocado por UE por slot — sem repetir o erro antigo de
+// assumir rnti = ueIdx + 1.
+inline std::map<uint32_t, uint16_t> g_ueIdxParaRnti;
 
 // Ponto de início da simulação em tempo real (wall-clock).
 // Preenchido em main() antes do Simulator::Run().
@@ -247,19 +268,24 @@ ImprimirSeparador(char c = '-', int largura = 52)
 // ------------------------------------------------------------
 // SinrCallback()
 //
-// Conectada diretamente a cada UE PHY via
-// TraceConnectWithoutContext (ver Bloco 6 em
-// simulacao-vj5g.cc). Chamada a cada slot de simulação.
-// Acumula o SINR em escala linear e converte para dB ao final.
+// Conectada a cada UE PHY via MakeBoundCallback(&SinrCallback, ueIdx)
+// + TraceConnectWithoutContext (ver Bloco 6.1 em simulacao-vj5g.cc).
+// Chamada a cada slot de simulação. Acumula o SINR em escala linear
+// e converte para dB ao final.
 //
-// Parâmetros (definidos pela assinatura DlDataSinrTracedCallback):
+// Parâmetros:
+//   ueIdx  → índice real do UE (amarrado via MakeBoundCallback no
+//            momento da conexão do trace — NÃO é o RNTI, e não
+//            depende de nenhuma suposição sobre numeração de RNTI)
 //   cellId → ID da célula (não usado aqui)
-//   rnti   → identificador do UE — chave do mapa
+//   rnti   → identificador RNTI do UE na célula (não usado aqui —
+//            mantido só porque faz parte da assinatura do trace source)
 //   sinr   → valor do SINR em escala linear
 //   bwpId  → ID da BWP (não usado aqui)
 // ------------------------------------------------------------
 inline void
-SinrCallback(uint16_t cellId,
+SinrCallback(uint32_t ueIdx,
+             uint16_t cellId,
              uint16_t rnti,
              double   sinr,
              uint16_t bwpId)
@@ -269,8 +295,13 @@ SinrCallback(uint16_t cellId,
     double sinrDb = 10.0 * std::log10(sinr);
 
     // Acumula soma e contagem para cálculo da média posterior
-    g_sinrAcumulado[rnti].first  += sinrDb;
-    g_sinrAcumulado[rnti].second += 1;
+    g_sinrAcumulado[ueIdx].first  += sinrDb;
+    g_sinrAcumulado[ueIdx].second += 1;
+
+    // Registra a correspondência ueIdx → RNTI real (idempotente — o RNTI
+    // de um UE não muda durante a simulação, sobrescrever com o mesmo
+    // valor a cada amostra não tem custo relevante).
+    g_ueIdxParaRnti[ueIdx] = rnti;
 }
 
 // Declaração antecipada — a implementação está no Bloco 7A,

@@ -524,6 +524,44 @@ main(int argc, char* argv[])
         "BeamformingMethod",
         TypeIdValue(DirectPathBeamforming::GetTypeId()));
 
+    // CORREÇÃO (12/ago/2026): --numerology existia como parâmetro de linha
+    // de comando (variável `numerology`, padrão 1 = 30kHz) mas nunca era
+    // aplicado a nada — SimpleOperationBandConf() acima só recebe
+    // centralFrequency/bandwidth/numCcPerBand, sem numerologia. Ou seja, a
+    // simulação sempre rodou com o valor padrão da própria NrGnbPhy, não
+    // com o que o usuário pedia no --numerology. Aplicando aqui via
+    // atributo da PHY da gNB — precisa vir ANTES de InstallGnbDevice(),
+    // igual às demais configurações de antena logo abaixo.
+    // NÃO TESTADO EM COMPILAÇÃO (sem acesso ao ns-3-nr aqui) — se o nome
+    // do atributo "Numerology" não existir na sua versão do NrGnbPhy, a
+    // compilação vai falhar com um erro claro apontando essa linha; me
+    // mande a mensagem de erro que eu ajusto.
+    nrHelper->SetGnbPhyAttribute("Numerology", UintegerValue(numerology));
+
+    // CORREÇÃO (13/ago/2026): --tddPattern tinha o MESMO problema do
+    // --numerology — existia como parâmetro de linha de comando (variável
+    // `tddPattern`, padrão "DL|DL|DL|DL|UL|DL|DL|DL|DL|UL|" = 80% DL/20%
+    // UL) mas nunca era aplicado a nada. Evidência de que essa correção é a
+    // certa: o formato da string (pipe-delimitado, "DL|UL|...") é
+    // exatamente o formato que o atributo "Pattern" da NrGnbPhy espera nos
+    // exemplos padrão do 5G-LENA — não foi um valor inventado, foi montado
+    // já nesse formato específico e nunca conectado.
+    //
+    // Isso é o suspeito mais provável do "gap" de ~32% dos slots faltando
+    // no slot_log_common.csv (ver análise de 12/ago/2026): slots UL não
+    // têm alocação de downlink pra logar, então a linha nem é escrita —
+    // e o padrão default da biblioteca (desconhecido até agora) pode ter
+    // uma fração de UL bem maior que os 20% que essa variável sempre
+    // sugeriu. Depois desta correção, o gap deve mudar (idealmente cair
+    // pra ~20%, batendo com o padrão default acima) — comparar a próxima
+    // rodada de slot_log_common.csv com a anterior confirma.
+    //
+    // NÃO TESTADO EM COMPILAÇÃO (sem acesso ao ns-3-nr aqui) — mesma
+    // ressalva do Numerology acima: se "Pattern" não for o nome certo do
+    // atributo nesta versão, a compilação falha com erro claro nesta
+    // linha; me manda a mensagem que eu ajusto.
+    nrHelper->SetGnbPhyAttribute("Pattern", StringValue(tddPattern));
+
     nrHelper->SetGnbAntennaAttribute("NumRows",    UintegerValue(4));
     nrHelper->SetGnbAntennaAttribute("NumColumns", UintegerValue(4));
     nrHelper->SetGnbAntennaAttribute("AntennaElement",
@@ -827,15 +865,21 @@ main(int argc, char* argv[])
     // --------------------------------------------------------
 
     // --- 6.1 Conectar trace de SINR ---
+    // CORREÇÃO (12/ago/2026): antes conectava com MakeCallback(&SinrCallback)
+    // puro, e a leitura posterior tentava adivinhar de qual UE cada SINR
+    // era (assumindo rnti = ueIdx + 1 — ver correção em g_sinrAcumulado no
+    // .h). Agora amarra o índice REAL do UE (i, o mesmo índice usado em
+    // ueDevs/ueNodes) no momento da conexão, via MakeBoundCallback — o
+    // trace passa a saber de qual UE ele é sem depender do RNTI.
     for (uint32_t i = 0; i < ueDevs.GetN(); ++i)
     {
         Ptr<NrUePhy> uePhy = nrHelper->GetUePhy(ueDevs.Get(i), 0);
         uePhy->TraceConnectWithoutContext(
-            "DlDataSinr", MakeCallback(&SinrCallback));
+            "DlDataSinr", MakeBoundCallback(&SinrCallback, i));
     }
 
     NS_LOG_INFO("Trace DlDataSinr conectado diretamente em "
-             << ueDevs.GetN() << " UEs via GetUePhy");
+             << ueDevs.GetN() << " UEs via GetUePhy (ueIdx amarrado por UE)");
 
     // --- 6.2 Coletar distâncias UE-gNB ---
     std::vector<double> distanciasUe(ueNodes.GetN(), 0.0);
@@ -851,6 +895,20 @@ main(int argc, char* argv[])
                  << " posição=(" << posUe.x << "," << posUe.y << ")"
                  << " distância=" << distanciasUe[i] << "m");
     }
+
+    // O diagnóstico [DIAG-DIST] que existia aqui (11/ago/2026) investigava
+    // um distance_gnb_m absurdo (~100+ km) visto no ue_summary.csv de uma
+    // rodada anterior, para UEs de índice mais alto. O log confirmou que o
+    // valor calculado aqui sempre esteve correto (ex: UE5 = 117.9208905m),
+    // e o CSV de uma rodada nova (12/ago/2026, já com os outros dois
+    // consertos aplicados e o binário recompilado) saiu correto também
+    // (117.921, com decimal). Não foi encontrada nenhuma transformação no
+    // caminho entre esse cálculo e a escrita no CSV — o mais provável é
+    // que o CSV problemático original tenha vindo de um binário
+    // desatualizado (build não refletindo o .cc mais recente na época).
+    // Se esse valor voltar a aparecer errado numa rodada futura, é sinal
+    // de recompilar do zero (./ns3 build, ou ./ns3 clean && ./ns3 build)
+    // antes de investigar o código de novo. Diagnóstico removido.
 
     // --------------------------------------------------------
     // FIM DO BLOCO 6
@@ -998,19 +1056,35 @@ main(int argc, char* argv[])
                            / (flowStats.rxPackets - 1)) * 1000.0;
         }
 
+        // CORREÇÃO (11/ago/2026): flowStats.lostPackets, do FlowMonitor do
+        // ns-3, fica preso em 0 nesta topologia — o FlowMonitor só marca um
+        // pacote como "perdido" através de uma heurística de timeout entre
+        // os classificadores de origem/destino, que não dispara aqui (tráfego
+        // UDP unidirecional sobre portadora 5G-LENA). Isso deixava plr_pct=0
+        // mesmo quando rx_packets << tx_packets — contradição visível ao
+        // comparar com pdr_pct, que É calculado corretamente a partir de
+        // rx/tx. A perda real de pacotes é sempre tx-rx (nenhum pacote some
+        // "no meio do caminho" sem ou ter chegado ou não ter chegado até o
+        // fim da simulação), então tanto plrPct quanto lostPacketsReais
+        // passam a ser derivados de tx/rx, e não do contador do FlowMonitor.
+        uint64_t lostPacketsReais = (flowStats.txPackets > flowStats.rxPackets)
+            ? (flowStats.txPackets - flowStats.rxPackets) : 0;
+
         double plrPct = 0.0;
         double pdrPct = 0.0;
         if (flowStats.txPackets > 0)
         {
-            plrPct = (static_cast<double>(flowStats.lostPackets)
+            plrPct = (static_cast<double>(lostPacketsReais)
                      / flowStats.txPackets) * 100.0;
             pdrPct = (static_cast<double>(flowStats.rxPackets)
                      / flowStats.txPackets) * 100.0;
         }
 
+        // CORREÇÃO (12/ago/2026): g_sinrAcumulado agora é indexado por
+        // ueIdx real (amarrado no Bloco 6.1 via MakeBoundCallback), não
+        // mais por um RNTI adivinhado — ver correção completa no .h.
         double sinrMeanDb = 0.0;
-        uint16_t rnti = static_cast<uint16_t>(ueIdx + 1);
-        auto sinrIt = g_sinrAcumulado.find(rnti);
+        auto sinrIt = g_sinrAcumulado.find(ueIdx);
         if (sinrIt != g_sinrAcumulado.end() && sinrIt->second.second > 0)
         {
             sinrMeanDb = sinrIt->second.first / sinrIt->second.second;
@@ -1031,7 +1105,7 @@ main(int argc, char* argv[])
                 std::max(resumoPorUe[ueIdx].delayP99Ms, delayP99Ms);
             resumoPorUe[ueIdx].txPackets       += flowStats.txPackets;
             resumoPorUe[ueIdx].rxPackets       += flowStats.rxPackets;
-            resumoPorUe[ueIdx].lostPackets     += flowStats.lostPackets;
+            resumoPorUe[ueIdx].lostPackets     += lostPacketsReais;
         }
 
         NS_LOG_INFO("Flow " << flowId
@@ -1058,7 +1132,7 @@ main(int argc, char* argv[])
                     << pdrPct << ","
                     << flowStats.txPackets << ","
                     << flowStats.rxPackets << ","
-                    << flowStats.lostPackets << ","
+                    << lostPacketsReais << ","
                     << sinrMeanDb << ","
                     << distanceM << "\n";
         }
@@ -1090,8 +1164,12 @@ main(int argc, char* argv[])
     if (enableUeSummaryCsv)
     {
         ueCsv.open(ueSummaryCsvPath);
+        // Coluna "rnti" adicionada em 12/ago/2026: permite cruzar este CSV
+        // com o log nativo do 5G-LENA slot_log_common.csv (RBG por UE por
+        // slot, indexado por RNTI — ver --EnableCommonSlotCsv), sem repetir
+        // o erro de assumir rnti = ueIdx + 1. Ver computar_rbg_por_ue.py.
         ueCsv << "scheduler,traffic_profile,num_ues,seed,bandwidth_mhz,"
-              << "ue_id,throughput_mbps,sinr_mean_db,distance_gnb_m,"
+              << "ue_id,rnti,throughput_mbps,sinr_mean_db,distance_gnb_m,"
               << "delay_mean_ms,delay_p99_ms,plr_pct,pdr_pct,"
               << "tx_packets,rx_packets,lost_packets,"
               << "jain_vazao,throughput_agregado_mbps\n";
@@ -1117,9 +1195,10 @@ main(int argc, char* argv[])
         double pdrPct = r.txPackets > 0
             ? static_cast<double>(r.rxPackets) / r.txPackets * 100.0 : 0.0;
 
+        // CORREÇÃO (12/ago/2026): idem — busca por ueIdx real (i), não
+        // mais por RNTI adivinhado.
         double sinrDb = 0.0;
-        uint16_t rnti = static_cast<uint16_t>(i + 1);
-        auto sinrIt = g_sinrAcumulado.find(rnti);
+        auto sinrIt = g_sinrAcumulado.find(i);
         if (sinrIt != g_sinrAcumulado.end() && sinrIt->second.second > 0)
         {
             sinrDb = sinrIt->second.first / sinrIt->second.second;
@@ -1145,12 +1224,20 @@ main(int argc, char* argv[])
 
         if (enableUeSummaryCsv)
         {
+            // RNTI real do UE (0 se por algum motivo nenhuma amostra de
+            // SINR chegou a ser coletada para ele — não deveria acontecer
+            // em uma simulação normal, mas evita usar um valor não
+            // inicializado do mapa).
+            auto rntiIt = g_ueIdxParaRnti.find(i);
+            uint16_t rntiReal = (rntiIt != g_ueIdxParaRnti.end()) ? rntiIt->second : 0;
+
             ueCsv << schedulerMode << ","
                   << trafficProfile << ","
                   << ueNumPergNb << ","
                   << seed << ","
                   << (bandwidth / 1e6) << ","
                   << i << ","
+                  << rntiReal << ","
                   << r.throughputMbps << ","
                   << sinrDb << ","
                   << distM << ","
@@ -1195,6 +1282,10 @@ main(int argc, char* argv[])
     std::cout << "UEs                 : " << ueNumPergNb << std::endl;
     std::cout << "Seed                : " << seed << std::endl;
     std::cout << "Bandwidth           : " << bandwidth/1e6 << " MHz" << std::endl;
+    std::cout << "Numerologia         : " << static_cast<int>(numerology)
+               << " (agora aplicada de fato — ver correção de 12/ago/2026)" << std::endl;
+    std::cout << "Padrão TDD          : " << tddPattern
+               << " (agora aplicado de fato — ver correção de 13/ago/2026)" << std::endl;
     std::cout << "Tempo simulado      : " << simTime.GetSeconds() << " s" << std::endl;
     ImprimirSeparador('-', 52);
     std::cout << "Throughput agregado : " << throughputAgregadoMbps << " Mbps" << std::endl;
@@ -1203,6 +1294,16 @@ main(int argc, char* argv[])
     std::cout << "SINR coletado       : " << g_sinrAcumulado.size()
               << " UEs" << std::endl;
     ImprimirSeparador('=', 52);
+
+    // O diagnóstico [DIAG-SINR] que existia aqui (11/ago/2026) confirmou a
+    // causa do sinr_mean_db=0 em UEs de índice mais alto: o código assumia
+    // rnti = ueIdx + 1, mas os RNTIs reais atribuídos pela RRC não são
+    // sequenciais a partir de 1 (numa rodada de 10 UEs, saíram
+    // "1 2 3 4 5 6 11 12 13 14" — pulou de 6 para 11). Corrigido conectando
+    // o trace de SINR com MakeBoundCallback amarrando o ueIdx real (Bloco
+    // 6.1), então g_sinrAcumulado passou a ser indexado por ueIdx, não por
+    // RNTI — ver simulacao-vj5g-utils.h. Diagnóstico removido depois de
+    // confirmada a causa.
 
     // Linha estruturada para parsing pelo orquestrador Python
     NS_LOG_UNCOND("[RESULT]"
