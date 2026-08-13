@@ -65,6 +65,47 @@ class ValidationTests(unittest.TestCase):
         with self.assertRaisesRegex(analysis.AnalysisError, "não finito"):
             analysis.validate_window_data(sample([("rr", 0, float("inf"), 0.8)]))
 
+    def test_rejects_missing_requested_group_column(self):
+        data = sample([("rr", 0, 1.0, 0.9), ("pf", 0, 2.0, 0.8)])
+        with self.assertRaisesRegex(analysis.AnalysisError, "seed"):
+            analysis.mark_pareto_front(data, ["seed", "window_id"])
+
+    def test_rejects_single_scheduler(self):
+        with self.assertRaisesRegex(analysis.AnalysisError, "ao menos dois"):
+            analysis.mark_pareto_front(sample([("rr", 0, 1.0, 0.9)]), ["window_id"])
+
+    def test_rejects_duplicate_scheduler_in_window(self):
+        data = sample([
+            ("rr", 0, 1.0, 0.9),
+            ("rr", 0, 1.0, 0.9),
+            ("pf", 0, 2.0, 0.8),
+        ])
+        with self.assertRaisesRegex(analysis.AnalysisError, "duplicadas"):
+            analysis.mark_pareto_front(data, ["window_id"])
+
+    def test_rejects_incomplete_window(self):
+        data = sample([
+            ("rr", 0, 1.0, 0.9),
+            ("pf", 0, 2.0, 0.8),
+            ("rr", 1, 1.5, 0.9),
+        ])
+        with self.assertRaisesRegex(analysis.AnalysisError, "incompletas"):
+            analysis.mark_pareto_front(data, ["window_id"])
+
+    def test_rejects_time_misalignment(self):
+        data = sample([("rr", 0, 1.0, 0.9), ("pf", 0, 2.0, 0.8)])
+        data["time_s"] = [0.1, 0.2]
+        with self.assertRaisesRegex(analysis.AnalysisError, "desalinhados"):
+            analysis.mark_pareto_front(data, ["window_id"])
+
+    def test_rejects_invalid_numeric_options(self):
+        for epsilon in (-1.0, float("nan"), float("inf")):
+            with self.subTest(epsilon=epsilon):
+                with self.assertRaisesRegex(analysis.AnalysisError, "epsilon"):
+                    analysis.validate_analysis_options(epsilon)
+        with self.assertRaisesRegex(analysis.AnalysisError, "finita"):
+            analysis.validate_analysis_options(1e-9, float("inf"))
+
 
 class NashAndRankingTests(unittest.TestCase):
     def test_selects_best_nash_product(self):
@@ -86,6 +127,14 @@ class NashAndRankingTests(unittest.TestCase):
         ranking = analysis.rank_schedulers(scored, winners, ["window_id"])
         self.assertTrue(winners["nash_empate"].all())
         self.assertEqual(ranking["vitorias_nash_equivalentes"].tolist(), [0.5, 0.5])
+
+    def test_rejects_reference_below_observed_maximum(self):
+        marked = analysis.mark_pareto_front(
+            sample([("rr", 0, 50.0, 0.9), ("pf", 0, 100.0, 0.7)]),
+            ["window_id"],
+        )
+        with self.assertRaisesRegex(analysis.AnalysisError, "máximo observado"):
+            analysis.add_nash_scores(marked, throughput_reference=80.0)
 
     def test_pipeline_writes_all_outputs(self):
         data = sample([("rr", 0, 40.0, 1.0), ("pf", 0, 50.0, 0.8)])

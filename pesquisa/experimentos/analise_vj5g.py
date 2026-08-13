@@ -64,12 +64,76 @@ def validate_window_data(data: pd.DataFrame, epsilon: float = DEFAULT_EPSILON) -
         raise AnalysisError("jain_throughput deve estar no intervalo [0, 1]")
 
 
-def available_group_columns(data: pd.DataFrame, requested: Sequence[str]) -> list[str]:
-    """Retorna colunas de agrupamento existentes, exigindo ``window_id``."""
-    columns = [column for column in requested if column in data.columns]
+def validate_analysis_options(
+    epsilon: float,
+    throughput_reference: float | None = None,
+) -> None:
+    """Rejeita opções que tornariam comparações e metadados inválidos."""
+    if not math.isfinite(epsilon) or epsilon < 0.0:
+        raise AnalysisError("epsilon deve ser finito e não negativo")
+    if throughput_reference is not None and not math.isfinite(throughput_reference):
+        raise AnalysisError("A referência de vazão deve ser finita")
+
+
+def resolve_group_columns(data: pd.DataFrame, requested: Sequence[str]) -> list[str]:
+    """Valida e retorna as colunas que identificam uma janela comparável."""
+    columns = list(dict.fromkeys(requested))
+    if not columns:
+        raise AnalysisError("Informe ao menos uma coluna de agrupamento")
     if "window_id" not in columns:
         raise AnalysisError("O agrupamento precisa incluir window_id")
+    missing = [column for column in columns if column not in data.columns]
+    if missing:
+        raise AnalysisError(
+            "Colunas de agrupamento ausentes: " + ", ".join(missing)
+        )
     return columns
+
+
+def groupby_key(columns: Sequence[str]) -> str | list[str]:
+    """Evita a mudança de semântica do pandas para listas de uma coluna."""
+    return columns[0] if len(columns) == 1 else list(columns)
+
+
+def validate_comparable_groups(
+    data: pd.DataFrame,
+    group_columns: Sequence[str],
+    epsilon: float = DEFAULT_EPSILON,
+) -> list[str]:
+    """Garante uma linha por scheduler e o mesmo conjunto em toda janela."""
+    groups = resolve_group_columns(data, group_columns)
+    schedulers = sorted(data["scheduler"].astype(str).str.strip().unique())
+    if len(schedulers) < 2:
+        raise AnalysisError("A análise exige ao menos dois schedulers")
+
+    duplicate_mask = data.duplicated(groups + ["scheduler"], keep=False)
+    if duplicate_mask.any():
+        raise AnalysisError(
+            "Há linhas duplicadas para a mesma janela e scheduler "
+            f"({int(duplicate_mask.sum())} linhas)"
+        )
+
+    expected = frozenset(schedulers)
+    scheduler_sets = data.groupby(groupby_key(groups), dropna=False, sort=False)["scheduler"].agg(
+        lambda values: frozenset(values.astype(str).str.strip())
+    )
+    incomplete = scheduler_sets[scheduler_sets != expected]
+    if not incomplete.empty:
+        raise AnalysisError(
+            "Há janelas incompletas ou com conjunto inconsistente de schedulers "
+            f"({len(incomplete)} grupos; esperado: {', '.join(schedulers)})"
+        )
+
+    if "time_s" in data.columns:
+        times = pd.to_numeric(data["time_s"], errors="coerce")
+        if times.isna().any() or not times.map(math.isfinite).all():
+            raise AnalysisError("A coluna time_s contém valor não numérico ou não finito")
+        time_spread = data.assign(_time_s=times).groupby(
+            groupby_key(groups), dropna=False, sort=False
+        )["_time_s"].agg(lambda values: values.max() - values.min())
+        if (time_spread > epsilon).any():
+            raise AnalysisError("Há schedulers desalinhados no tempo dentro da mesma janela")
+    return schedulers
 
 
 def is_dominated(
@@ -99,14 +163,19 @@ def mark_pareto_front(
     epsilon: float = DEFAULT_EPSILON,
 ) -> pd.DataFrame:
     """Adiciona ``pareto_nao_dominado`` em cada grupo/janela."""
+    validate_analysis_options(epsilon)
     validate_window_data(data, epsilon)
-    groups = available_group_columns(data, group_columns)
+    groups = resolve_group_columns(data, group_columns)
     output = data.copy()
+    output["scheduler"] = output["scheduler"].astype(str).str.strip()
+    validate_comparable_groups(output, groups, epsilon)
     output["aggregate_thr_mbps"] = pd.to_numeric(output["aggregate_thr_mbps"])
     output["jain_throughput"] = pd.to_numeric(output["jain_throughput"])
     output["pareto_nao_dominado"] = False
 
-    for _, indexes in output.groupby(groups, dropna=False, sort=False).groups.items():
+    for _, indexes in output.groupby(
+        groupby_key(groups), dropna=False, sort=False
+    ).groups.items():
         group = output.loc[indexes]
         candidates = list(zip(group["aggregate_thr_mbps"], group["jain_throughput"]))
         output.loc[indexes, "pareto_nao_dominado"] = [
@@ -125,8 +194,16 @@ def add_nash_scores(
 ) -> tuple[pd.DataFrame, dict[str, float]]:
     """Normaliza os objetivos e calcula o produto de Barganha de Nash."""
     output = marked.copy()
+    numeric_options = {
+        "fairness_reference": fairness_reference,
+        "throughput_disagreement": throughput_disagreement,
+        "fairness_disagreement": fairness_disagreement,
+    }
+    if any(not math.isfinite(value) for value in numeric_options.values()):
+        raise AnalysisError("Referências e pontos de desacordo devem ser finitos")
     if throughput_reference is None:
         throughput_reference = float(output["aggregate_thr_mbps"].max())
+    validate_analysis_options(DEFAULT_EPSILON, throughput_reference)
     references = {
         "throughput_reference": float(throughput_reference),
         "fairness_reference": float(fairness_reference),
@@ -137,6 +214,12 @@ def add_nash_scores(
         raise AnalysisError("A referência de vazão deve superar o ponto de desacordo")
     if fairness_reference <= fairness_disagreement:
         raise AnalysisError("A referência de justiça deve superar o ponto de desacordo")
+    maximum_throughput = float(output["aggregate_thr_mbps"].max())
+    if throughput_reference < maximum_throughput:
+        raise AnalysisError(
+            "A referência de vazão não pode ser menor que o máximo observado "
+            f"({maximum_throughput})"
+        )
 
     output["throughput_normalized"] = (
         (output["aggregate_thr_mbps"] - throughput_disagreement)
@@ -156,9 +239,10 @@ def select_nash_winners(
     epsilon: float = DEFAULT_EPSILON,
 ) -> pd.DataFrame:
     """Retorna todos os vencedores empatados de Nash em cada fronteira."""
-    groups = available_group_columns(scored, group_columns)
+    validate_analysis_options(epsilon)
+    groups = resolve_group_columns(scored, group_columns)
     winners: list[pd.DataFrame] = []
-    for _, group in scored.groupby(groups, dropna=False, sort=False):
+    for _, group in scored.groupby(groupby_key(groups), dropna=False, sort=False):
         candidates = group[group["pareto_nao_dominado"]]
         if candidates.empty:
             continue
@@ -168,7 +252,10 @@ def select_nash_winners(
         selected["nash_num_vencedores"] = len(selected)
         winners.append(selected)
     if not winners:
-        return scored.head(0).assign(nash_empate=pd.Series(dtype=bool), nash_num_vencedores=pd.Series(dtype=int))
+        return scored.head(0).assign(
+            nash_empate=pd.Series(dtype=bool),
+            nash_num_vencedores=pd.Series(dtype=int),
+        )
     return pd.concat(winners, ignore_index=True)
 
 
@@ -179,8 +266,8 @@ def rank_schedulers(
 ) -> pd.DataFrame:
     """Cria ranking global, fracionando a vitória de Nash em empates."""
     schedulers = sorted(marked["scheduler"].astype(str).unique())
-    groups = available_group_columns(marked, group_columns)
-    total_groups = int(marked.groupby(groups, dropna=False).ngroups)
+    groups = resolve_group_columns(marked, group_columns)
+    total_groups = int(marked.groupby(groupby_key(groups), dropna=False).ngroups)
     appearances = (
         marked[marked["pareto_nao_dominado"]].groupby("scheduler").size()
     )
@@ -211,6 +298,7 @@ def run_analysis(
     epsilon: float = DEFAULT_EPSILON,
 ) -> dict[str, Path]:
     """Executa o pipeline completo e grava os artefatos científicos."""
+    validate_analysis_options(epsilon, throughput_reference)
     data = pd.read_csv(input_path)
     marked = mark_pareto_front(data, group_columns, epsilon)
     scored, references = add_nash_scores(marked, throughput_reference=throughput_reference)
@@ -231,12 +319,15 @@ def run_analysis(
         "input": str(input_path.resolve()),
         "rows": len(data),
         "schedulers": sorted(data["scheduler"].astype(str).unique()),
-        "group_columns": available_group_columns(data, group_columns),
+        "group_columns": resolve_group_columns(data, group_columns),
         "epsilon": epsilon,
         "normalization_scope": "offline_global",
         **references,
     }
-    paths["metadata"].write_text(json.dumps(metadata, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+    paths["metadata"].write_text(
+        json.dumps(metadata, indent=2, ensure_ascii=False, allow_nan=False) + "\n",
+        encoding="utf-8",
+    )
     return paths
 
 

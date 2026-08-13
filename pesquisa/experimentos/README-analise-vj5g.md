@@ -20,6 +20,12 @@ Quando disponíveis, `traffic_profile`, `num_ues`, `seed` e `bandwidth_mhz`
 também identificam cada janela comparável. Os schedulers só são comparados
 dentro da mesma combinação desses campos.
 
+Por segurança metodológica, todas as colunas indicadas em `--group-by` devem
+existir. Cada grupo precisa conter exatamente uma linha de cada scheduler, o
+mesmo conjunto de schedulers e, quando `time_s` existir, o mesmo instante. O
+programa rejeita duplicatas, janelas incompletas e entradas com apenas um
+scheduler, em vez de produzir vitórias artificiais.
+
 ## Execução
 
 ```bash
@@ -42,6 +48,10 @@ e não é causal. Para uma referência de calibração fixa, informe:
 ```bash
 --throughput-reference 100.0
 ```
+
+A referência informada deve ser finita e pelo menos igual ao maior throughput
+observado; isso evita que o clipping crie empates artificiais. `--epsilon`
+também deve ser finito e não negativo.
 
 ## Testes
 
