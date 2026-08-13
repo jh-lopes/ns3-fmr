@@ -12,6 +12,7 @@ TX_POWER="${VJ5G_TX_POWER:-43}"
 LAMBDA_OVERRIDE="${VJ5G_LAMBDA_OVERRIDE:-5000}"
 MAX_WORKERS="${VJ5G_MAX_WORKERS:-8}"
 MIN_AVAILABLE_GB="${VJ5G_MIN_AVAILABLE_GB:-8}"
+SIM_BINARY="${VJ5G_SIM_BINARY:-}"
 
 read -r -a SEEDS <<< "${VJ5G_SEEDS:-1 2 3}"
 read -r -a UES_LIST <<< "${VJ5G_UE_COUNTS:-10 50 100}"
@@ -28,10 +29,27 @@ if ! [[ "$MIN_AVAILABLE_GB" =~ ^[0-9]+$ ]]; then
   exit 2
 fi
 
+if [[ -z "$SIM_BINARY" ]]; then
+  for candidate in \
+    build/scratch/ns3.*-simulacao-vj5g-optimized \
+    build/scratch/ns3.*-simulacao-vj5g-default; do
+    if [[ -x "$candidate" ]]; then
+      SIM_BINARY="$candidate"
+      break
+    fi
+  done
+fi
+if [[ -z "$SIM_BINARY" || ! -x "$SIM_BINARY" ]]; then
+  echo "ERRO: binário simulacao-vj5g não encontrado. Execute ./ns3 build -j 12" >&2
+  exit 2
+fi
+SIM_BINARY=$(realpath "$SIM_BINARY")
+
 mkdir -p "$ROOT/00_metadata"
 git rev-parse HEAD > "$ROOT/00_metadata/git_commit.txt"
 git status --short --branch > "$ROOT/00_metadata/git_status.txt"
 date --iso-8601=seconds > "$ROOT/00_metadata/inicio.txt"
+printf '%s\n' "$SIM_BINARY" > "$ROOT/00_metadata/sim_binary.txt"
 
 TOTAL=$((${#SEEDS[@]} * ${#UES_LIST[@]} * ${#SIGNAL_NAMES[@]} * ${#SCHEDULERS[@]}))
 MIN_AVAILABLE_KB=$((MIN_AVAILABLE_GB * 1024 * 1024))
@@ -67,18 +85,24 @@ run_one() {
   fi
   rm -f "$success" "$failed" "$window" "$flow" "$ue_summary"
 
-  local args="scratch/simulacao-vj5g
---schedulerMode=$scheduler --trafficProfile=embb --ueNumPergNb=$ues
---simTime=$SIM_TIME --seed=$seed --rngRun=1
---bandwidth=$BANDWIDTH --totalTxPower=$TX_POWER
---lambdaOverride=$LAMBDA_OVERRIDE --enableMobility=false --mobilityBounds=$bounds
---EnableWindowCsv=true --WindowCsvPath=$window --WindowSizeMs=$WINDOW_MS
---EnableFlowSummaryCsv=true --FlowSummaryCsvPath=$flow
---EnableUeSummaryCsv=true --UeSummaryCsvPath=$ue_summary"
-  printf './ns3 run --no-build %q\n' "$args" > "$mode_dir/comando.txt"
+  local command=(
+    "$SIM_BINARY"
+    "--schedulerMode=$scheduler" "--trafficProfile=embb" "--ueNumPergNb=$ues"
+    "--simTime=$SIM_TIME" "--seed=$seed" "--rngRun=1"
+    "--bandwidth=$BANDWIDTH" "--totalTxPower=$TX_POWER"
+    "--lambdaOverride=$LAMBDA_OVERRIDE" "--enableMobility=false"
+    "--mobilityBounds=$bounds" "--EnableWindowCsv=true"
+    "--WindowCsvPath=$window" "--WindowSizeMs=$WINDOW_MS"
+    "--EnableFlowSummaryCsv=true" "--FlowSummaryCsvPath=$flow"
+    "--EnableUeSummaryCsv=true" "--UeSummaryCsvPath=$ue_summary"
+  )
+  printf '%q ' "${command[@]}" > "$mode_dir/comando.txt"
+  printf '\n' >> "$mode_dir/comando.txt"
   echo "[RUN] seed=$seed ues=$ues sinal=$signal scheduler=$scheduler"
 
-  ./ns3 run --no-build "$args" > "$log" 2>&1
+  # O executável é chamado diretamente: evita descoberta/build concorrente
+  # pelo front-end ./ns3 quando vários workers iniciam ao mesmo tempo.
+  "${command[@]}" > "$log" 2>&1
   local rc=$?
   if ((rc == 0)) && [[ -s "$window" && -s "$flow" && -s "$ue_summary" ]]; then
     date --iso-8601=seconds > "$success"
@@ -90,6 +114,7 @@ run_one() {
   return 1
 }
 
+echo "Binário: $SIM_BINARY"
 echo "Bateria: $TOTAL simulações; workers=$MAX_WORKERS; reserva=${MIN_AVAILABLE_GB}GiB"
 for seed in "${SEEDS[@]}"; do
   for ues in "${UES_LIST[@]}"; do
