@@ -51,10 +51,10 @@ Antes de ocupar os workers, confira a matriz sem executar simulações:
 python3.12 scripts-VJ5/bateria_test_2.py --dry-run
 ```
 
-Execute toda a bateria com dois workers:
+Execute toda a bateria com quatro workers:
 
 ```bash
-python3.12 scripts-VJ5/bateria_test_2.py --phase all --workers 2
+python3.12 scripts-VJ5/bateria_test_2.py --phase all --workers 4
 ```
 
 Também é possível executar as fases separadamente e retomar posteriormente. O
@@ -62,8 +62,8 @@ arquivo `executions.csv` funciona como ledger: combinações concluídas com
 sucesso não são repetidas.
 
 ```bash
-python3.12 scripts-VJ5/bateria_test_2.py --phase static --workers 2
-python3.12 scripts-VJ5/bateria_test_2.py --phase mobility --workers 2
+python3.12 scripts-VJ5/bateria_test_2.py --phase static --workers 4
+python3.12 scripts-VJ5/bateria_test_2.py --phase mobility --workers 4
 ```
 
 O log nativo de RBG×símbolo é habilitado por padrão. Para um ensaio rápido que
