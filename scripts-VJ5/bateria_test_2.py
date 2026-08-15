@@ -193,7 +193,7 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--phase", choices=("all", "static", "mobility"), default="all")
     parser.add_argument("--output", type=Path, default=ROOT / "pesquisa/resultados/bateria_test_2")
-    parser.add_argument("--python", default="python3.12", help="Python compatível usado para executar ./ns3")
+    parser.add_argument("--python", default="python3", help="Python usado para executar ./ns3")
     parser.add_argument("--workers", type=int, default=4)
     parser.add_argument("--seed", type=int, default=1)
     parser.add_argument("--stream-start", type=int, default=1)

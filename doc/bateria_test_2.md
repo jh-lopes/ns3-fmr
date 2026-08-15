@@ -37,24 +37,23 @@ throughput daquela execução, não como replicações independentes.
 
 ## Preparação no servidor
 
-Use uma versão de Python compatível com o wrapper do ns-3. Neste checkout,
-Python 3.12 é a opção prevista:
+Use o Python 3 disponível no ambiente virtual do servidor:
 
 ```bash
-python3.12 ./ns3 configure --enable-examples --enable-tests
-python3.12 ./ns3 build simulacao-vj5g
+python3 ./ns3 configure --enable-examples --enable-tests
+python3 ./ns3 build simulacao-vj5g
 ```
 
 Antes de ocupar os workers, confira a matriz sem executar simulações:
 
 ```bash
-python3.12 scripts-VJ5/bateria_test_2.py --dry-run
+python3 scripts-VJ5/bateria_test_2.py --dry-run
 ```
 
 Execute toda a bateria com quatro workers:
 
 ```bash
-python3.12 scripts-VJ5/bateria_test_2.py --phase all --workers 4
+python3 scripts-VJ5/bateria_test_2.py --phase all --workers 4
 ```
 
 Também é possível executar as fases separadamente e retomar posteriormente. O
@@ -62,8 +61,8 @@ arquivo `executions.csv` funciona como ledger: combinações concluídas com
 sucesso não são repetidas.
 
 ```bash
-python3.12 scripts-VJ5/bateria_test_2.py --phase static --workers 4
-python3.12 scripts-VJ5/bateria_test_2.py --phase mobility --workers 4
+python3 scripts-VJ5/bateria_test_2.py --phase static --workers 4
+python3 scripts-VJ5/bateria_test_2.py --phase mobility --workers 4
 ```
 
 O log nativo de RBG×símbolo é habilitado por padrão. Para um ensaio rápido que
@@ -76,7 +75,7 @@ Depois da bateria, gere os ICs, as diferenças pareadas e as marcações de Pare
 e Nash:
 
 ```bash
-python3.12 scripts-VJ5/analisar_bateria_test_2.py
+python3 scripts-VJ5/analisar_bateria_test_2.py
 ```
 
 Os produtos consolidados são:
