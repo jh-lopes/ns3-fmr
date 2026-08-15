@@ -102,6 +102,7 @@ main(int argc, char* argv[])
     Time     udpAppStartTime = MilliSeconds(400);
     uint32_t seed            = 1;
     uint32_t run             = 1;
+    int64_t  streamStart     = 1;
 
     // --- Mobilidade ---
     bool        enableMobility   = false;
@@ -215,6 +216,9 @@ main(int argc, char* argv[])
     cmd.AddValue("simTime",  "Tempo total de simulação", simTime);
     cmd.AddValue("seed",     "Semente do RNG",           seed);
     cmd.AddValue("rngRun",   "Run do RNG",               run);
+    cmd.AddValue("streamStart",
+                 "Primeiro stream explícito (fixo entre schedulers pareados)",
+                 streamStart);
     cmd.AddValue("enableMobility",
                  "Ativa mobilidade dinâmica (false=fixo, true=dinâmico)",
                  enableMobility);
@@ -301,6 +305,7 @@ main(int argc, char* argv[])
              << " bandwidth="      << bandwidth / 1e6 << "MHz"
              << " simTime="        << simTime.GetSeconds() << "s"
              << " seed="           << seed
+             << " rngRun="         << run
              << " enableMobility=" << enableMobility);
 
     // --------------------------------------------------------
@@ -339,6 +344,7 @@ main(int argc, char* argv[])
     // os primeiros pacotes.
     g_bytesRecebidosPorUe.assign(ueNumPergNb, 0);
     g_bytesRecebidosUltimaJanela.assign(ueNumPergNb, 0);
+    g_throughputUltimaJanela.assign(ueNumPergNb, 0.0);
 
     // --- 3.3 Configurar mobilidade ---
     //
@@ -480,13 +486,18 @@ main(int argc, char* argv[])
                 << "'. Use: random_walk | random_waypoint");
         }
 
-        mobilityUe.SetPositionAllocator(
-            "ns3::RandomDiscPositionAllocator",
-            "X",   StringValue("0.0"),
-            "Y",   StringValue("0.0"),
-            "Rho", StringValue("ns3::UniformRandomVariable[Min=10|Max="
+        Ptr<RandomDiscPositionAllocator> positionAllocator =
+            CreateObject<RandomDiscPositionAllocator>();
+        positionAllocator->SetAttribute("X", DoubleValue(0.0));
+        positionAllocator->SetAttribute("Y", DoubleValue(0.0));
+        positionAllocator->SetAttribute(
+            "Rho",
+            StringValue("ns3::UniformRandomVariable[Min=10|Max="
                 + std::to_string(static_cast<int>(mobilityBounds)) + "]"));
+        positionAllocator->AssignStreams(streamStart);
+        mobilityUe.SetPositionAllocator(positionAllocator);
         mobilityUe.Install(ueNodes);
+        mobilityUe.AssignStreams(ueNodes, streamStart + 10);
 
         NS_LOG_INFO("Mobilidade: DINAMICA modelo=" << mobilityModel
                  << " speed=[" << mobilitySpeedMin
@@ -722,6 +733,13 @@ main(int argc, char* argv[])
     NetDeviceContainer ueDevs =
         nrHelper->InstallUeDevice(ueNodes, allBwps);
 
+    // Mantém a associação stream→componente idêntica entre RR/PF/MR para o
+    // mesmo RngRun. Assim, as comparações por run podem ser tratadas como
+    // pareadas sem depender da ordem em que cada scheduler consome o RNG.
+    int64_t assignedStream = streamStart + 1000;
+    assignedStream += nrHelper->AssignStreams(gnbDevs, assignedStream);
+    assignedStream += nrHelper->AssignStreams(ueDevs, assignedStream);
+
     NrHelper::GetGnbPhy(gnbDevs.Get(0), 0)->SetTxPower(totalTxPowerDbm);
 
     // --- 3.7 Configurar host remoto ---
@@ -946,7 +964,7 @@ main(int argc, char* argv[])
     if (enableWindowCsv)
     {
         g_windowCsv.open(windowCsvPath);
-        g_windowCsv << "scheduler,traffic_profile,num_ues,seed,"
+        g_windowCsv << "scheduler,traffic_profile,num_ues,seed,rng_run,"
                     << "bandwidth_mhz,window_id,time_s,"
                     << "aggregate_thr_mbps,jain_throughput\n";
 
@@ -959,10 +977,27 @@ main(int argc, char* argv[])
                             &RegistrarJanela,
                             MilliSeconds(windowSizeMs), simTime,
                             schedulerMode, trafficProfile,
-                            ueNumPergNb, seed, bandwidth / 1e6);
+                            ueNumPergNb, seed, run, bandwidth / 1e6);
 
         NS_LOG_INFO("Log por janela ativo: windowSizeMs=" << windowSizeMs
                  << " path=" << windowCsvPath);
+    }
+
+    if (enableUeSnapshotCsv)
+    {
+        g_ueTemporalCsv.open(ueSnapshotCsvPath);
+        g_ueTemporalCsv << "rng_run,seed,time_s,window_id,scheduler,ue_id,"
+                        << "x_m,y_m,distance_gnb_m,sinr_db,throughput_mbps,"
+                        << "jain_throughput\n";
+        Simulator::Schedule(udpAppStartTime + ueSnapshotPeriod,
+                            &RegistrarUeTemporal,
+                            ueSnapshotPeriod,
+                            simTime,
+                            ueNodes,
+                            gnbNodes.Get(0),
+                            schedulerMode,
+                            seed,
+                            run);
     }
 
     // --- 7.2 Executar simulação ---
@@ -1269,6 +1304,10 @@ main(int argc, char* argv[])
         NS_LOG_UNCOND("[VJ5G] window_log salvo em: " << windowCsvPath
                    << " (" << g_janelaId << " janelas)");
     }
+    if (enableUeSnapshotCsv && g_ueTemporalCsv.is_open())
+    {
+        g_ueTemporalCsv.close();
+    }
 
     // Relatório visual no console
     std::cout << std::endl;
@@ -1312,7 +1351,8 @@ main(int argc, char* argv[])
                << " throughput_mbps=" << throughputAgregadoMbps
                << " jain_vazao=" << jainVazao
                << " ues=" << ueNumPergNb
-               << " seed=" << seed);
+               << " seed=" << seed
+               << " rng_run=" << run);
 
     Simulator::Destroy();
 

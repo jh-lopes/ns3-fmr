@@ -28,6 +28,7 @@
 #include <algorithm>
 #include <cmath>
 #include <fstream>
+#include <limits>
 #include <map>
 #include <string>
 #include <utility>
@@ -177,6 +178,7 @@ ObterPerfilDeTrafego(const std::string& trafficProfile)
 // nenhuma suposição sobre a numeração de RNTI.
 // Mapa: ueIdx → {soma_sinr_db, contagem_amostras}
 inline std::map<uint32_t, std::pair<double, uint32_t>> g_sinrAcumulado;
+inline std::map<uint32_t, std::pair<double, uint32_t>> g_sinrUltimoSnapshot;
 
 // NOVO (12/ago/2026): mapa ueIdx → RNTI real, populado no mesmo lugar
 // (SinrCallback), que já recebe os dois valores de forma confiável. Serve
@@ -343,11 +345,14 @@ inline std::vector<uint64_t> g_bytesRecebidosPorUe;
 // Snapshot do acumulado no fechamento da última janela — usado
 // para isolar o delta de bytes recebidos DENTRO da janela atual.
 inline std::vector<uint64_t> g_bytesRecebidosUltimaJanela;
+inline std::vector<double> g_throughputUltimaJanela;
+inline double g_jainUltimaJanela = 0.0;
 
 // CSV de saída do log por janela. Global porque é escrito tanto
 // pelo callback periódico (RegistrarJanela) quanto fechado ao
 // final em main() — mesmo padrão de g_sinrAcumulado.
 inline std::ofstream g_windowCsv;
+inline std::ofstream g_ueTemporalCsv;
 
 // Contador de janelas já processadas nesta simulação.
 // Reiniciado implicitamente a cada execução do binário (processo
@@ -402,6 +407,7 @@ RegistrarJanela(Time windowSize,
                  std::string trafficProfile,
                  uint16_t ueNumPergNb,
                  uint32_t seed,
+                 uint32_t rngRun,
                  double bandwidthMhz)
 {
     double windowSeconds = windowSize.GetSeconds();
@@ -425,6 +431,8 @@ RegistrarJanela(Time windowSize,
     // Reutiliza a mesma função de Jain do Bloco 7A — evita duplicar
     // a fórmula entre a métrica agregada e a métrica por janela.
     double jainJanela = CalcularJainVazao(throughputPorUeJanela);
+    g_throughputUltimaJanela = throughputPorUeJanela;
+    g_jainUltimaJanela = jainJanela;
 
     if (g_windowCsv.is_open())
     {
@@ -432,6 +440,7 @@ RegistrarJanela(Time windowSize,
                     << trafficProfile << ","
                     << ueNumPergNb << ","
                     << seed << ","
+                    << rngRun << ","
                     << bandwidthMhz << ","
                     << g_janelaId << ","
                     << Simulator::Now().GetSeconds() << ","
@@ -450,7 +459,58 @@ RegistrarJanela(Time windowSize,
                             &RegistrarJanela,
                             windowSize, simTime,
                             schedulerMode, trafficProfile,
-                            ueNumPergNb, seed, bandwidthMhz);
+                            ueNumPergNb, seed, rngRun, bandwidthMhz);
+    }
+}
+
+// Registra a evolução conjunta de posição, distância e SINR por UE. O SINR
+// corresponde às amostras recebidas desde o snapshot anterior, em vez da média
+// acumulada de toda a execução, para que mudanças de canal possam ser
+// relacionadas às métricas da mesma janela temporal.
+inline void
+RegistrarUeTemporal(Time period,
+                    Time simTime,
+                    NodeContainer ueNodes,
+                    Ptr<Node> gnbNode,
+                    std::string schedulerMode,
+                    uint32_t seed,
+                    uint32_t rngRun)
+{
+    const Vector gnbPosition = gnbNode->GetObject<MobilityModel>()->GetPosition();
+    for (uint32_t ueIdx = 0; ueIdx < ueNodes.GetN(); ++ueIdx)
+    {
+        const Vector position = ueNodes.Get(ueIdx)->GetObject<MobilityModel>()->GetPosition();
+        const auto current = g_sinrAcumulado[ueIdx];
+        const auto previous = g_sinrUltimoSnapshot[ueIdx];
+        const uint32_t sampleDelta = current.second - previous.second;
+        const double sinrDb = sampleDelta > 0
+            ? (current.first - previous.first) / static_cast<double>(sampleDelta)
+            : std::numeric_limits<double>::quiet_NaN();
+
+        g_ueTemporalCsv << rngRun << "," << seed << ","
+                        << Simulator::Now().GetSeconds() << ","
+                        << (g_janelaId > 0 ? g_janelaId - 1 : 0) << ","
+                        << schedulerMode << ","
+                        << ueIdx << "," << position.x << "," << position.y << ","
+                        << CalculateDistance(position, gnbPosition) << ","
+                        << sinrDb << ","
+                        << (ueIdx < g_throughputUltimaJanela.size()
+                                ? g_throughputUltimaJanela[ueIdx] : 0.0) << ","
+                        << g_jainUltimaJanela << "\n";
+        g_sinrUltimoSnapshot[ueIdx] = current;
+    }
+
+    if (Simulator::Now() + period < simTime)
+    {
+        Simulator::Schedule(period,
+                            &RegistrarUeTemporal,
+                            period,
+                            simTime,
+                            ueNodes,
+                            gnbNode,
+                            schedulerMode,
+                            seed,
+                            rngRun);
     }
 }
 
