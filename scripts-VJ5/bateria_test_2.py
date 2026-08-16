@@ -11,6 +11,7 @@ from __future__ import annotations
 import argparse
 import csv
 import math
+import os
 import re
 import subprocess
 import sys
@@ -22,8 +23,6 @@ from statistics import fmean, stdev
 
 
 ROOT = Path(__file__).resolve().parent.parent
-NS3 = ROOT / "ns3"
-PROGRAM = "simulacao-vj5g"
 SCHEDULERS = ("rr", "pf", "mr")
 RESULT_RE = re.compile(r"\[RESULT\].*?throughput_mbps=([0-9.eE+-]+).*?jain_vazao=([0-9.eE+-]+)")
 FIELDS = (
@@ -85,6 +84,20 @@ def window_statistics(path: Path) -> tuple[float, float, float]:
     return fmean(throughput), fmean(jain), median
 
 
+def resolve_sim_binary(configured: Path | None) -> Path:
+    candidates = [configured] if configured else [
+        *sorted((ROOT / "build/scratch").glob("ns3.*-simulacao-vj5g-optimized")),
+        *sorted((ROOT / "build/scratch").glob("ns3.*-simulacao-vj5g-default")),
+    ]
+    for candidate in candidates:
+        if candidate and candidate.is_file() and os.access(candidate, os.X_OK):
+            return candidate.resolve()
+    raise SystemExit(
+        "Binário simulacao-vj5g não encontrado. Execute './ns3 build' "
+        "ou informe --sim-binary."
+    )
+
+
 def run_one(args: argparse.Namespace, scenario: Scenario, scheduler: str, rng_run: int) -> dict[str, object]:
     import time
     output_dir = args.output / scenario.name / f"run_{rng_run:03d}" / scheduler
@@ -95,23 +108,24 @@ def run_one(args: argparse.Namespace, scenario: Scenario, scheduler: str, rng_ru
     temporal_csv = output_dir / "ue_temporal.csv"
     slot_csv = output_dir / "slot_log_common.csv"
     command = [
-        args.python, str(NS3), "run", "--no-build",
-        f"{PROGRAM} --schedulerMode={scheduler} --trafficProfile=embb"
-        f" --ueNumPergNb={scenario.ue_count} --simTime={args.sim_time}s"
-        f" --seed={args.seed} --rngRun={rng_run} --streamStart={args.stream_start}"
-        f" --mobilityBounds={scenario.spatial_limit_m}"
-        f" --enableMobility={'true' if scenario.mobility else 'false'}"
-        f" --mobilityModel=random_walk"
-        f" --mobilitySpeedMin={args.mobility_speed_mps}"
-        f" --mobilitySpeedMax={args.mobility_speed_mps}"
-        f" --EnableConsoleDetails=false --EnableWindowCsv=true"
-        f" --WindowSizeMs={args.window_ms} --WindowCsvPath={window_csv}"
-        f" --EnableUeSummaryCsv=true --UeSummaryCsvPath={ue_csv}"
-        f" --EnableFlowSummaryCsv=true --FlowSummaryCsvPath={flow_csv}"
-        f" --EnableUeSnapshotCsv=true --UeSnapshotCsvPath={temporal_csv}"
-        f" --UeSnapshotPeriod={args.window_ms}ms"
-        f" --EnableCommonSlotCsv={'true' if args.enable_rbg else 'false'}"
-        f" --CommonSlotCsvPath={slot_csv}",
+        str(args.sim_binary),
+        f"--schedulerMode={scheduler}", "--trafficProfile=embb",
+        f"--ueNumPergNb={scenario.ue_count}", f"--simTime={args.sim_time}s",
+        f"--seed={args.seed}", f"--rngRun={rng_run}",
+        f"--streamStart={args.stream_start}",
+        f"--mobilityBounds={scenario.spatial_limit_m}",
+        f"--enableMobility={'true' if scenario.mobility else 'false'}",
+        "--mobilityModel=random_walk",
+        f"--mobilitySpeedMin={args.mobility_speed_mps}",
+        f"--mobilitySpeedMax={args.mobility_speed_mps}",
+        "--EnableConsoleDetails=false", "--EnableWindowCsv=true",
+        f"--WindowSizeMs={args.window_ms}", f"--WindowCsvPath={window_csv}",
+        "--EnableUeSummaryCsv=true", f"--UeSummaryCsvPath={ue_csv}",
+        "--EnableFlowSummaryCsv=true", f"--FlowSummaryCsvPath={flow_csv}",
+        "--EnableUeSnapshotCsv=true", f"--UeSnapshotCsvPath={temporal_csv}",
+        f"--UeSnapshotPeriod={args.window_ms}ms",
+        f"--EnableCommonSlotCsv={'true' if args.enable_rbg else 'false'}",
+        f"--CommonSlotCsvPath={slot_csv}",
     ]
     started = time.monotonic()
     proc = subprocess.run(command, cwd=ROOT, text=True, capture_output=True)
@@ -193,7 +207,8 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--phase", choices=("all", "static", "mobility"), default="all")
     parser.add_argument("--output", type=Path, default=ROOT / "pesquisa/resultados/bateria_test_2")
-    parser.add_argument("--python", default="python3", help="Python usado para executar ./ns3")
+    parser.add_argument("--sim-binary", type=Path,
+                        help="Binário compilado; por padrão procura em build/scratch")
     parser.add_argument("--workers", type=int, default=4)
     parser.add_argument("--seed", type=int, default=1)
     parser.add_argument("--stream-start", type=int, default=1)
@@ -209,6 +224,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--dry-run", action="store_true")
     args = parser.parse_args()
     args.output = args.output.resolve()
+    args.sim_binary = resolve_sim_binary(args.sim_binary)
     if args.min_runs < 2 or args.min_runs > args.max_runs or args.batch_size < 1:
         parser.error("use 2 <= min-runs <= max-runs e batch-size >= 1")
     return args

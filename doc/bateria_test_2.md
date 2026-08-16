@@ -56,6 +56,10 @@ Execute toda a bateria com quatro workers:
 python3 scripts-VJ5/bateria_test_2.py --phase all --workers 4
 ```
 
+O orquestrador localiza e executa diretamente o binário compilado em
+`build/scratch/`, evitando depender da descoberta de alvos do wrapper `./ns3`.
+Se necessário, o caminho pode ser definido explicitamente com `--sim-binary`.
+
 Também é possível executar as fases separadamente e retomar posteriormente. O
 arquivo `executions.csv` funciona como ledger: combinações concluídas com
 sucesso não são repetidas.
