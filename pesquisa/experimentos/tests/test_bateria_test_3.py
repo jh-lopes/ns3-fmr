@@ -19,6 +19,15 @@ class BateriaTest3Tests(unittest.TestCase):
     def test_default_load_uses_competitive_not_collapsed_regime(self):
         self.assertEqual(MODULE.DEFAULT_LAMBDA_PPS, 500)
 
+    def test_smoke_mode_reduces_campaign_to_one_short_run(self):
+        args = Namespace(smoke=True, sim_time=30.0, min_runs=30,
+                         max_runs=100, batch_size=10)
+        MODULE.apply_smoke_defaults(args)
+        self.assertEqual(
+            (args.sim_time, args.min_runs, args.max_runs, args.batch_size),
+            (1.0, 1, 1, 1),
+        )
+
     def write_positions(self, path: Path, rng_run: int, offset: float = 0.0):
         with path.open("w", newline="", encoding="utf-8") as handle:
             writer = csv.DictWriter(

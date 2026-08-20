@@ -350,6 +350,15 @@ def report_data_quality(rows: list[dict[str, str]], scenario: Scenario) -> None:
         )
 
 
+def apply_smoke_defaults(args: argparse.Namespace) -> None:
+    """Reduz a campanha a uma run curta sem alterar o cenário de rádio."""
+    if args.smoke:
+        args.sim_time = 1.0
+        args.min_runs = 1
+        args.max_runs = 1
+        args.batch_size = 1
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--output", type=Path,
@@ -373,6 +382,10 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--jain-error", type=float, default=0.01)
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument(
+        "--smoke", action="store_true",
+        help="Executa 1 run de 1 s para RR/PF/MR/QoS e valida o pareamento."
+    )
+    parser.add_argument(
         "--no-progress", action="store_true",
         help="Desativa o painel dinâmico e usa uma linha por execução concluída."
     )
@@ -381,11 +394,12 @@ def parse_args() -> argparse.Namespace:
         help="Força o painel em ambientes sem TTY, como algumas células de notebook."
     )
     args = parser.parse_args()
+    apply_smoke_defaults(args)
     args.output = args.output.resolve()
     args.sim_binary = resolve_binary(args.sim_binary)
     if (args.workers < 1 or args.ue_count < 2 or args.radius_m <= 10
             or args.bandwidth <= 0 or args.lambda_pps <= 0
-            or not 2 <= args.min_runs <= args.max_runs):
+            or not 1 <= args.min_runs <= args.max_runs):
         parser.error("parâmetros físicos/estatísticos inválidos")
     return args
 

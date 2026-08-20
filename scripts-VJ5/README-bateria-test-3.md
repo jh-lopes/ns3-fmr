@@ -48,11 +48,12 @@ python3 scripts-VJ5/bateria_test_3.py \
   --radius-m 500 \
   --bandwidth 100000000 \
   --lambda-pps 500 \
-  --sim-time 2 \
-  --min-runs 2 \
-  --max-runs 2 \
-  --batch-size 2
+  --smoke
 ```
+
+`--smoke` executa somente uma run de 1 s para cada um dos quatro schedulers.
+Ele valida geração dos CSVs, `rng_run`, hash e pareamento da topologia, mas não
+tem validade estatística e não avalia convergência.
 
 Confira que os hashes são iguais entre schedulers da mesma run e diferentes
 entre runs:
