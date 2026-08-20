@@ -10,11 +10,13 @@ import math
 import os
 import re
 import subprocess
+import sys
+import threading
 import time
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 from dataclasses import dataclass
 from pathlib import Path
-from statistics import fmean, stdev
+from statistics import fmean, median, stdev
 
 ROOT = Path(__file__).resolve().parent.parent
 SCHEDULERS = ("rr", "pf", "mr", "qos")
@@ -39,6 +41,122 @@ class Scenario:
     @property
     def name(self) -> str:
         return f"static_random_{self.ue_count}ues_{self.radius_m}m"
+
+
+class ProgressPanel:
+    """Painel de progresso para as execuções paralelas da bateria."""
+
+    BAR_WIDTH = 20
+
+    def __init__(self, tasks: list[tuple[Scenario, str, int]], enabled: bool,
+                 force: bool = False):
+        self.enabled = enabled and (sys.stdout.isatty() or force)
+        self.lock = threading.Lock()
+        self.rendered_lines = 0
+        self.order = [(run, scheduler) for _, scheduler, run in tasks]
+        self.states = {
+            key: {
+                "status": "WAITING", "started": None, "elapsed": 0.0,
+                "result": "", "error": ""
+            }
+            for key in self.order
+        }
+
+    def start(self, run: int, scheduler: str) -> None:
+        with self.lock:
+            state = self.states[(run, scheduler)]
+            state["status"] = "RUNNING"
+            state["started"] = time.monotonic()
+
+    def finish(self, run: int, scheduler: str, row: dict[str, object]) -> None:
+        with self.lock:
+            state = self.states[(run, scheduler)]
+            started = state["started"] or time.monotonic()
+            state["elapsed"] = time.monotonic() - started
+            state["status"] = "DONE" if row["status"] == "OK" else "ERROR"
+            state["result"] = str(row["status"])
+            state["error"] = str(row.get("error", ""))
+
+    @staticmethod
+    def _duration(seconds: float) -> str:
+        minutes, secs = divmod(int(seconds), 60)
+        return f"{minutes:02d}:{secs:02d}"
+
+    @classmethod
+    def _bar(cls, fraction: float) -> str:
+        fraction = min(1.0, max(0.0, fraction))
+        filled = round(fraction * cls.BAR_WIDTH)
+        return "█" * filled + "░" * (cls.BAR_WIDTH - filled)
+
+    def _snapshot(self) -> tuple[list[tuple[tuple[int, str], dict]], float | None]:
+        with self.lock:
+            snapshot = [(key, dict(self.states[key])) for key in self.order]
+        durations = [state["elapsed"] for _, state in snapshot
+                     if state["status"] in {"DONE", "ERROR"}
+                     and state["elapsed"] > 0]
+        return snapshot, median(durations) if durations else None
+
+    def render(self) -> None:
+        if not self.enabled:
+            return
+        snapshot, estimate = self._snapshot()
+        now = time.monotonic()
+        completed = sum(state["status"] in {"DONE", "ERROR"}
+                        for _, state in snapshot)
+        total = len(snapshot)
+        lines = [
+            f"Progresso geral [{self._bar(completed / total)}] "
+            f"{completed:>2}/{total:<2} ({100 * completed / total:5.1f}%)"
+        ]
+
+        for (run, scheduler), state in snapshot:
+            status = state["status"]
+            if status == "WAITING":
+                bar = self._bar(0)
+                detail = "aguardando"
+            elif status == "RUNNING":
+                elapsed = now - float(state["started"])
+                if estimate:
+                    fraction = min(elapsed / estimate, 0.95)
+                    detail = f"executando ~{100 * fraction:4.0f}% {self._duration(elapsed)}"
+                else:
+                    # Até a primeira conclusão, a barra é indeterminada.
+                    fraction = ((int(elapsed * 4) % self.BAR_WIDTH) + 1) / self.BAR_WIDTH
+                    detail = f"executando       {self._duration(elapsed)}"
+                bar = self._bar(fraction)
+            elif status == "DONE":
+                bar = self._bar(1)
+                detail = f"OK               {self._duration(state['elapsed'])}"
+            else:
+                bar = self._bar(1)
+                detail = f"ERRO             {self._duration(state['elapsed'])}"
+            lines.append(
+                f"run={run:03d} {scheduler:<4} [{bar}] {detail}"
+            )
+
+        if self.rendered_lines:
+            sys.stdout.write(f"\x1b[{self.rendered_lines}F")
+        for line in lines:
+            sys.stdout.write("\x1b[2K" + line + "\n")
+        for _ in range(max(0, self.rendered_lines - len(lines))):
+            sys.stdout.write("\x1b[2K\n")
+        sys.stdout.flush()
+        self.rendered_lines = len(lines)
+
+    def completed_message(self, row: dict[str, object]) -> None:
+        if not self.enabled:
+            print(f"  run={int(row['rng_run']):03d} "
+                  f"{str(row['scheduler']):<4}: {row['status']} "
+                  f"({float(row['elapsed_s']):.1f}s)")
+
+
+def run_one_with_progress(args: argparse.Namespace, scenario: Scenario,
+                          scheduler: str, rng_run: int,
+                          panel: ProgressPanel) -> dict[str, object]:
+    panel.start(rng_run, scheduler)
+    row = run_one(args, scenario, scheduler, rng_run)
+    panel.finish(rng_run, scheduler, row)
+    return row
 
 
 def scenarios(ue_count: int, radius_m: int) -> list[Scenario]:
@@ -201,6 +319,36 @@ def validate_distinct_runs(rows: list[dict[str, str]], scenario: Scenario) -> No
         raise RuntimeError(f"runs distintas reutilizaram topologia em {scenario.name}")
 
 
+def report_data_quality(rows: list[dict[str, str]], scenario: Scenario) -> None:
+    """Resume se a campanha produziu variação útil para comparação."""
+    print(f"\n[DIAGNÓSTICO] {scenario.name}")
+    scheduler_means: dict[str, tuple[float, float]] = {}
+    for scheduler in SCHEDULERS:
+        selected = [row for row in rows
+                    if row["scenario"] == scenario.name
+                    and row["scheduler"] == scheduler
+                    and row["status"] == "OK"]
+        throughput = [float(row["throughput_mbps"]) for row in selected]
+        jain = [float(row["jain"]) for row in selected]
+        if not throughput:
+            print(f"  {scheduler}: sem execuções válidas")
+            continue
+        scheduler_means[scheduler] = (fmean(throughput), fmean(jain))
+        t_std = stdev(throughput) if len(throughput) > 1 else 0.0
+        j_std = stdev(jain) if len(jain) > 1 else 0.0
+        print(
+            f"  {scheduler}: n={len(selected)}, "
+            f"T={fmean(throughput):.3f}±{t_std:.3f} Mbps, "
+            f"J={fmean(jain):.4f}±{j_std:.4f}"
+        )
+
+    if len(set(scheduler_means.values())) <= 1:
+        print(
+            "  AVISO: os escalonadores produziram médias iguais. "
+            "O cenário pode estar subcarregado e não discrimina as políticas."
+        )
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--output", type=Path,
@@ -210,7 +358,10 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--ue-count", type=int, default=50)
     parser.add_argument("--radius-m", type=int, default=500)
     parser.add_argument("--bandwidth", type=int, default=100_000_000)
-    parser.add_argument("--lambda-pps", type=int, default=500)
+    parser.add_argument(
+        "--lambda-pps", type=int, default=1000,
+        help="Taxa por UE. 1000 pps com pacotes de 1500 bytes equivale a 12 Mbps/UE."
+    )
     parser.add_argument("--seed", type=int, default=1)
     parser.add_argument("--sim-time", type=float, default=30.0)
     parser.add_argument("--window-ms", type=int, default=100)
@@ -220,6 +371,14 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--throughput-error", type=float, default=0.05)
     parser.add_argument("--jain-error", type=float, default=0.01)
     parser.add_argument("--dry-run", action="store_true")
+    parser.add_argument(
+        "--no-progress", action="store_true",
+        help="Desativa o painel dinâmico e usa uma linha por execução concluída."
+    )
+    parser.add_argument(
+        "--force-progress", action="store_true",
+        help="Força o painel em ambientes sem TTY, como algumas células de notebook."
+    )
     args = parser.parse_args()
     args.output = args.output.resolve()
     args.sim_binary = resolve_binary(args.sim_binary)
@@ -263,14 +422,29 @@ def main() -> int:
             print(f"[{scenario.name}] rngRun {first_missing}..{target}: {len(tasks)}")
             if args.dry_run:
                 return 0
+            panel = ProgressPanel(
+                tasks, enabled=not args.no_progress,
+                force=args.force_progress
+            )
             with ThreadPoolExecutor(max_workers=args.workers) as executor:
-                futures = [executor.submit(run_one, args, *task) for task in tasks]
+                futures = {
+                    executor.submit(run_one_with_progress, args, *task, panel)
+                    for task in tasks
+                }
                 batch_rows = []
-                for future in as_completed(futures):
-                    row = future.result()
-                    batch_rows.append(row)
-                    append_row(ledger, row)
-                    print(f"  run={row['rng_run']} {row['scheduler']}: {row['status']}")
+                pending = set(futures)
+                panel.render()
+                while pending:
+                    done, pending = wait(
+                        pending, timeout=0.25,
+                        return_when=FIRST_COMPLETED
+                    )
+                    for future in done:
+                        row = future.result()
+                        batch_rows.append(row)
+                        append_row(ledger, row)
+                        panel.completed_message(row)
+                    panel.render()
             rows = read_rows(ledger)
             for run in range(first_missing, target + 1):
                 validate_pairing(rows, scenario, run)
@@ -278,6 +452,8 @@ def main() -> int:
             if any(row["status"] != "OK" for row in batch_rows):
                 print("Execução com erro; corrija e retome usando o mesmo output.")
                 return 2
+        rows = read_rows(ledger)
+        report_data_quality(rows, scenario)
     return 0
 
 

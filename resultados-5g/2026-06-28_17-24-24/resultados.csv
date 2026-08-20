@@ -1,4 +1,0 @@
-flow_id,protocolo,ip_origem,porta_origem,ip_destino,porta_destino,tx_packets,rx_packets,tx_bytes,rx_bytes,perdas,throughput_mbps,atraso_medio_ms,jitter_medio_ms,pdr
-1,UDP,1.0.0.2,49153,7.0.0.2,1234,600,590,1816800,1786520,10,23.8203,10.0267,0.00363193,0.983333
-2,UDP,1.0.0.2,49154,7.0.0.3,1235,600,312,1816800,944736,288,12.5965,149.798,0.891026,0.52
-3,UDP,1.0.0.2,49155,7.0.0.3,1236,600,312,1816800,944736,288,12.5965,149.798,0.891026,0.52
