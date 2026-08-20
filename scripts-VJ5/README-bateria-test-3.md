@@ -10,8 +10,8 @@ mantém parados durante os 30 s simulados. Portanto, ela representa diferentes
 - raio máximo: 500 m;
 - raio mínimo: 10 m;
 - largura de banda: 100 MHz;
-- tráfego eMBB: 1500 bytes × 1000 pacotes/s = 12 Mbps oferecidos por UE;
-- carga total oferecida: 600 Mbps;
+- tráfego eMBB: 1500 bytes × 500 pacotes/s = 6 Mbps oferecidos por UE;
+- carga total oferecida: 300 Mbps;
 - schedulers: RR, PF, MR e QoS;
 - mesma `seed` e mesmo `rngRun` para os quatro schedulers (análise pareada);
 - nova topologia quando `rngRun` muda;
@@ -24,10 +24,11 @@ schedulers de um mesmo `rngRun` receberem topologias diferentes. O
 `ue_summary.csv` registra `seed`, `rng_run`, modo de posição, limite espacial e
 coordenadas iniciais.
 
-Com 50 UEs, a carga de 600 Mbps é superior à vazão agregada de aproximadamente
-260--275 Mbps observada nas baterias anteriores. Isso mantém filas ativas e
-força concorrência pelos RBGs sem usar o `lambdaOverride=5000`, que ofereceria
-3 Gbps e produziria uma sobrecarga excessiva. O raio de 500 m também cria
+Com 50 UEs, a carga de 300 Mbps fica ligeiramente acima da vazão agregada de
+aproximadamente 260--275 Mbps observada nas baterias anteriores. Isso mantém
+filas ativas e força concorrência pelos RBGs sem repetir a sobrecarga de 600
+Mbps que já produziu PDR baixo e filas de vários segundos, nem usar
+`lambdaOverride=5000`, que ofereceria 3 Gbps. O raio de 500 m também cria
 heterogeneidade de canal suficiente para separar RR, PF, MR e QoS.
 
 Os valores podem ser alterados explicitamente com `--ue-count`, `--radius-m`,
@@ -46,7 +47,7 @@ python3 scripts-VJ5/bateria_test_3.py \
   --ue-count 50 \
   --radius-m 500 \
   --bandwidth 100000000 \
-  --lambda-pps 1000 \
+  --lambda-pps 500 \
   --sim-time 2 \
   --min-runs 2 \
   --max-runs 2 \
@@ -81,7 +82,7 @@ nohup python3 scripts-VJ5/bateria_test_3.py \
   --ue-count 50 \
   --radius-m 500 \
   --bandwidth 100000000 \
-  --lambda-pps 1000 \
+  --lambda-pps 500 \
   > pesquisa/resultados/bateria_test_3.log 2>&1 &
 ```
 

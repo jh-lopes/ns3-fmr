@@ -210,7 +210,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--ue-count", type=int, default=50)
     parser.add_argument("--radius-m", type=int, default=500)
     parser.add_argument("--bandwidth", type=int, default=100_000_000)
-    parser.add_argument("--lambda-pps", type=int, default=1000)
+    parser.add_argument("--lambda-pps", type=int, default=500)
     parser.add_argument("--seed", type=int, default=1)
     parser.add_argument("--sim-time", type=float, default=30.0)
     parser.add_argument("--window-ms", type=int, default=100)
