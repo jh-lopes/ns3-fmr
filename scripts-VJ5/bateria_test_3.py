@@ -20,6 +20,7 @@ from statistics import fmean, median, stdev
 
 ROOT = Path(__file__).resolve().parent.parent
 SCHEDULERS = ("rr", "pf", "mr", "qos")
+DEFAULT_LAMBDA_PPS = 500
 RESULT_RE = re.compile(
     r"\[RESULT\].*?throughput_mbps=([0-9.eE+-]+).*?"
     r"jain_vazao=([0-9.eE+-]+).*?rng_run=([0-9]+)"
@@ -359,8 +360,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--radius-m", type=int, default=500)
     parser.add_argument("--bandwidth", type=int, default=100_000_000)
     parser.add_argument(
-        "--lambda-pps", type=int, default=1000,
-        help="Taxa por UE. 1000 pps com pacotes de 1500 bytes equivale a 12 Mbps/UE."
+        "--lambda-pps", type=int, default=DEFAULT_LAMBDA_PPS,
+        help="Taxa por UE. 500 pps com pacotes de 1500 bytes equivale a 6 Mbps/UE."
     )
     parser.add_argument("--seed", type=int, default=1)
     parser.add_argument("--sim-time", type=float, default=30.0)

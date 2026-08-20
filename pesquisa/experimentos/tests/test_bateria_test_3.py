@@ -16,6 +16,9 @@ SPEC.loader.exec_module(MODULE)
 
 
 class BateriaTest3Tests(unittest.TestCase):
+    def test_default_load_uses_competitive_not_collapsed_regime(self):
+        self.assertEqual(MODULE.DEFAULT_LAMBDA_PPS, 500)
+
     def write_positions(self, path: Path, rng_run: int, offset: float = 0.0):
         with path.open("w", newline="", encoding="utf-8") as handle:
             writer = csv.DictWriter(
