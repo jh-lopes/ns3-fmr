@@ -1,3 +1,0 @@
-TypeTraffic,FlowID,Source,Dest,Throughput(Mbps),Delay(ms),Jitter(ms),LostPackets,PDR(%)
-EMBB,1,1.0.0.2,7.0.0.2,6.94421,7.59302,0.982558,0,28.6667
-EMBB,2,1.0.0.2,7.0.0.3,6.6616,7.16364,0.981818,0,27.5

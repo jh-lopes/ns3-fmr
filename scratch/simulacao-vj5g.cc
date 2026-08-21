@@ -105,6 +105,7 @@ main(int argc, char* argv[])
 
     // --- Mobilidade ---
     bool        enableMobility   = false;
+    std::string positionMode     = "fixed_line";
     std::string mobilityModel    = "random_walk";
     double      mobilitySpeedMin = 0.5;
     double      mobilitySpeedMax = 1.5;
@@ -218,6 +219,9 @@ main(int argc, char* argv[])
     cmd.AddValue("enableMobility",
                  "Ativa mobilidade dinâmica (false=fixo, true=dinâmico)",
                  enableMobility);
+    cmd.AddValue("positionMode",
+                 "Posicionamento sem mobilidade: fixed_line | random_disc_static",
+                 positionMode);
     cmd.AddValue("mobilityModel",
                  "Modelo: random_walk | random_waypoint", mobilityModel);
     cmd.AddValue("mobilitySpeedMin", "Velocidade mínima em m/s", mobilitySpeedMin);
@@ -373,7 +377,41 @@ main(int argc, char* argv[])
         // ============================================================
 
         mobilityUe.SetMobilityModel("ns3::ConstantPositionMobilityModel");
-        mobilityUe.Install(ueNodes);
+
+        if (positionMode == "random_disc_static")
+        {
+            NS_ABORT_MSG_IF(!ueDistances.empty(),
+                            "ueDistances só pode ser usado com positionMode=fixed_line");
+            Ptr<RandomDiscPositionAllocator> allocator =
+                CreateObject<RandomDiscPositionAllocator>();
+            allocator->SetAttribute("X", DoubleValue(0.0));
+            allocator->SetAttribute("Y", DoubleValue(0.0));
+            allocator->SetAttribute(
+                "Rho",
+                StringValue("ns3::UniformRandomVariable[Min=10|Max="
+                            + std::to_string(mobilityBounds) + "]"));
+            // Stream fixo: o mesmo rngRun produz a mesma topologia para
+            // RR/PF/MR/QoS; outro rngRun seleciona outro substream.
+            allocator->AssignStreams(1);
+            mobilityUe.SetPositionAllocator(allocator);
+            mobilityUe.Install(ueNodes);
+            for (uint32_t i = 0; i < ueNodes.GetN(); ++i)
+            {
+                Ptr<MobilityModel> model = ueNodes.Get(i)->GetObject<MobilityModel>();
+                Vector position = model->GetPosition();
+                position.z = 1.5;
+                model->SetPosition(position);
+            }
+        }
+        else if (positionMode == "fixed_line")
+        {
+            mobilityUe.Install(ueNodes);
+        }
+        else
+        {
+            NS_ABORT_MSG("positionMode inválido: '" << positionMode
+                << "'. Use: fixed_line | random_disc_static");
+        }
 
         // ------------------------------------------------------------
         // Vetor que armazenará as distâncias informadas manualmente
@@ -404,41 +442,49 @@ main(int argc, char* argv[])
                 "ueDistances deve conter exatamente uma distância por UE.");
         }
 
-        for (uint32_t i = 0; i < ueNodes.GetN(); ++i)
+        if (positionMode == "fixed_line")
         {
-            uint32_t divisor = static_cast<uint32_t>(
-                std::max(1u, static_cast<uint32_t>(ueNumPergNb) - 1u));
-
-            double dist;
-
-            if (!distanciasManuais.empty())
+            for (uint32_t i = 0; i < ueNodes.GetN(); ++i)
             {
-                // MODO MANUAL: distância definida pelo usuário
-                dist = distanciasManuais[i];
-            }
-            else
-            {
-                // MODO AUTOMÁTICO: distribui igualmente de 10m a mobilityBounds
-                // Para 3 UEs com bounds=200: UE0=10m, UE1=105m, UE2=200m
-                dist = 10.0 + (mobilityBounds - 10.0) / divisor * i;
-            }
+                uint32_t divisor = static_cast<uint32_t>(
+                    std::max(1u, static_cast<uint32_t>(ueNumPergNb) - 1u));
 
-            ueNodes.Get(i)->GetObject<MobilityModel>()
-                ->SetPosition(Vector(dist, 0.0, 1.5));
-            // Altura 1.5m: dispositivo móvel ao nível do usuário
+                double dist;
 
-            NS_LOG_INFO("UE" << i << " distância configurada = " << dist << " m");
+                if (!distanciasManuais.empty())
+                {
+                    // MODO MANUAL: distância definida pelo usuário
+                    dist = distanciasManuais[i];
+                }
+                else
+                {
+                    // MODO AUTOMÁTICO: distribui igualmente de 10m a mobilityBounds
+                    // Para 3 UEs com bounds=200: UE0=10m, UE1=105m, UE2=200m
+                    dist = 10.0 + (mobilityBounds - 10.0) / divisor * i;
+                }
+
+                ueNodes.Get(i)->GetObject<MobilityModel>()
+                    ->SetPosition(Vector(dist, 0.0, 1.5));
+                // Altura 1.5m: dispositivo móvel ao nível do usuário
+
+                NS_LOG_INFO("UE" << i << " distância configurada = " << dist << " m");
+            }
         }
 
         if (!ueDistances.empty())
         {
             NS_LOG_INFO("Mobilidade: FIXA MANUAL | distâncias = " << ueDistances);
         }
-        else
+        else if (positionMode == "fixed_line")
         {
             NS_LOG_INFO("Mobilidade: FIXA AUTOMÁTICA"
                      << " | UEs = " << ueNumPergNb
                      << " | intervalo = [10 m, " << mobilityBounds << " m]");
+        }
+        else
+        {
+            NS_LOG_INFO("Mobilidade: FIXA ALEATÓRIA | disco = [10 m, "
+                        << mobilityBounds << " m] | rngRun=" << run);
         }
     }
     else
@@ -883,6 +929,7 @@ main(int argc, char* argv[])
 
     // --- 6.2 Coletar distâncias UE-gNB ---
     std::vector<double> distanciasUe(ueNodes.GetN(), 0.0);
+    std::vector<Vector> posicoesIniciaisUe(ueNodes.GetN());
     Vector posGnb = gnbNodes.Get(0)
         ->GetObject<MobilityModel>()->GetPosition();
 
@@ -890,6 +937,7 @@ main(int argc, char* argv[])
     {
         Vector posUe = ueNodes.Get(i)
             ->GetObject<MobilityModel>()->GetPosition();
+        posicoesIniciaisUe[i] = posUe;
         distanciasUe[i] = CalculateDistance(posGnb, posUe);
         NS_LOG_INFO("UE" << i
                  << " posição=(" << posUe.x << "," << posUe.y << ")"
@@ -946,7 +994,7 @@ main(int argc, char* argv[])
     if (enableWindowCsv)
     {
         g_windowCsv.open(windowCsvPath);
-        g_windowCsv << "scheduler,traffic_profile,num_ues,seed,"
+        g_windowCsv << "scheduler,traffic_profile,num_ues,seed,rng_run,"
                     << "bandwidth_mhz,window_id,time_s,"
                     << "aggregate_thr_mbps,jain_throughput\n";
 
@@ -959,7 +1007,7 @@ main(int argc, char* argv[])
                             &RegistrarJanela,
                             MilliSeconds(windowSizeMs), simTime,
                             schedulerMode, trafficProfile,
-                            ueNumPergNb, seed, bandwidth / 1e6);
+                            ueNumPergNb, seed, run, bandwidth / 1e6);
 
         NS_LOG_INFO("Log por janela ativo: windowSizeMs=" << windowSizeMs
                  << " path=" << windowCsvPath);
@@ -1000,7 +1048,7 @@ main(int argc, char* argv[])
     if (enableFlowSummaryCsv)
     {
         flowCsv.open(flowSummaryCsvPath);
-        flowCsv << "scheduler,traffic_profile,num_ues,seed,"
+        flowCsv << "scheduler,traffic_profile,num_ues,seed,rng_run,"
                 << "bandwidth_mhz,flow_id,ue_id,"
                 << "throughput_mbps,delay_mean_ms,delay_p99_ms,"
                 << "jitter_mean_ms,plr_pct,pdr_pct,"
@@ -1121,6 +1169,7 @@ main(int argc, char* argv[])
                     << trafficProfile << ","
                     << ueNumPergNb << ","
                     << seed << ","
+                    << run << ","
                     << (bandwidth / 1e6) << ","
                     << flowId << ","
                     << ueIdx << ","
@@ -1168,8 +1217,10 @@ main(int argc, char* argv[])
         // com o log nativo do 5G-LENA slot_log_common.csv (RBG por UE por
         // slot, indexado por RNTI — ver --EnableCommonSlotCsv), sem repetir
         // o erro de assumir rnti = ueIdx + 1. Ver computar_rbg_por_ue.py.
-        ueCsv << "scheduler,traffic_profile,num_ues,seed,bandwidth_mhz,"
-              << "ue_id,rnti,throughput_mbps,sinr_mean_db,distance_gnb_m,"
+        ueCsv << "scheduler,traffic_profile,num_ues,seed,rng_run,bandwidth_mhz,"
+              << "position_mode,mobility_enabled,mobility_bounds_m,"
+              << "ue_id,rnti,x_initial_m,y_initial_m,z_initial_m,"
+              << "throughput_mbps,sinr_mean_db,distance_gnb_m,"
               << "delay_mean_ms,delay_p99_ms,plr_pct,pdr_pct,"
               << "tx_packets,rx_packets,lost_packets,"
               << "jain_vazao,throughput_agregado_mbps\n";
@@ -1230,14 +1281,22 @@ main(int argc, char* argv[])
             // inicializado do mapa).
             auto rntiIt = g_ueIdxParaRnti.find(i);
             uint16_t rntiReal = (rntiIt != g_ueIdxParaRnti.end()) ? rntiIt->second : 0;
+            const Vector& initialPosition = posicoesIniciaisUe[i];
 
             ueCsv << schedulerMode << ","
                   << trafficProfile << ","
                   << ueNumPergNb << ","
                   << seed << ","
+                  << run << ","
                   << (bandwidth / 1e6) << ","
+                  << (enableMobility ? mobilityModel : positionMode) << ","
+                  << (enableMobility ? "true" : "false") << ","
+                  << mobilityBounds << ","
                   << i << ","
                   << rntiReal << ","
+                  << initialPosition.x << ","
+                  << initialPosition.y << ","
+                  << initialPosition.z << ","
                   << r.throughputMbps << ","
                   << sinrDb << ","
                   << distM << ","
@@ -1281,6 +1340,7 @@ main(int argc, char* argv[])
     std::cout << "Descrição           : " << perfil.descricao << std::endl;
     std::cout << "UEs                 : " << ueNumPergNb << std::endl;
     std::cout << "Seed                : " << seed << std::endl;
+    std::cout << "RNG run             : " << run << std::endl;
     std::cout << "Bandwidth           : " << bandwidth/1e6 << " MHz" << std::endl;
     std::cout << "Numerologia         : " << static_cast<int>(numerology)
                << " (agora aplicada de fato — ver correção de 12/ago/2026)" << std::endl;
@@ -1312,7 +1372,8 @@ main(int argc, char* argv[])
                << " throughput_mbps=" << throughputAgregadoMbps
                << " jain_vazao=" << jainVazao
                << " ues=" << ueNumPergNb
-               << " seed=" << seed);
+               << " seed=" << seed
+               << " rng_run=" << run);
 
     Simulator::Destroy();
 

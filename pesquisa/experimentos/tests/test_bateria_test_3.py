@@ -1,0 +1,133 @@
+import csv
+import importlib.util
+import sys
+import tempfile
+import unittest
+from argparse import Namespace
+from pathlib import Path
+
+
+SCRIPT = Path(__file__).parents[3] / "scripts-VJ5" / "bateria_test_3.py"
+SPEC = importlib.util.spec_from_file_location("bateria_test_3", SCRIPT)
+MODULE = importlib.util.module_from_spec(SPEC)
+assert SPEC.loader is not None
+sys.modules[SPEC.name] = MODULE
+SPEC.loader.exec_module(MODULE)
+
+
+class BateriaTest3Tests(unittest.TestCase):
+    def test_default_load_uses_competitive_not_collapsed_regime(self):
+        self.assertEqual(MODULE.DEFAULT_LAMBDA_PPS, 500)
+
+    def test_smoke_mode_reduces_campaign_to_one_short_run(self):
+        args = Namespace(smoke=True, sim_time=30.0, min_runs=30,
+                         max_runs=100, batch_size=10)
+        MODULE.apply_smoke_defaults(args)
+        self.assertEqual(
+            (args.sim_time, args.min_runs, args.max_runs, args.batch_size),
+            (1.0, 1, 1, 1),
+        )
+
+    def write_positions(self, path: Path, rng_run: int, offset: float = 0.0):
+        with path.open("w", newline="", encoding="utf-8") as handle:
+            writer = csv.DictWriter(
+                handle,
+                fieldnames=("ue_id", "rng_run", "x_initial_m",
+                            "y_initial_m", "z_initial_m"),
+            )
+            writer.writeheader()
+            writer.writerows([
+                {"ue_id": 0, "rng_run": rng_run, "x_initial_m": 10 + offset,
+                 "y_initial_m": 1, "z_initial_m": 1.5},
+                {"ue_id": 1, "rng_run": rng_run, "x_initial_m": 20 + offset,
+                 "y_initial_m": 2, "z_initial_m": 1.5},
+            ])
+
+    def test_position_hash_is_stable_and_changes_with_topology(self):
+        with tempfile.TemporaryDirectory() as directory:
+            first = Path(directory) / "first.csv"
+            same = Path(directory) / "same.csv"
+            other = Path(directory) / "other.csv"
+            self.write_positions(first, 1)
+            self.write_positions(same, 1)
+            self.write_positions(other, 2, offset=3)
+            self.assertEqual(MODULE.position_hash(first, 1),
+                             MODULE.position_hash(same, 1))
+            self.assertNotEqual(MODULE.position_hash(first, 1),
+                                MODULE.position_hash(other, 2))
+
+    def test_position_hash_rejects_wrong_rng_run(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "positions.csv"
+            self.write_positions(path, 1)
+            with self.assertRaisesRegex(RuntimeError, "rng_run"):
+                MODULE.position_hash(path, 2)
+
+    def test_pairing_rejects_different_scheduler_topologies(self):
+        scenario = MODULE.Scenario(10, 100)
+        rows = [
+            {"scenario": scenario.name, "rng_run": "1", "scheduler": scheduler,
+             "status": "OK", "position_hash": "same"}
+            for scheduler in MODULE.SCHEDULERS
+        ]
+        MODULE.validate_pairing(rows, scenario, 1)
+        rows[-1]["position_hash"] = "different"
+        with self.assertRaisesRegex(RuntimeError, "não pareada"):
+            MODULE.validate_pairing(rows, scenario, 1)
+
+    def test_battery_has_one_configurable_scenario(self):
+        self.assertEqual(MODULE.scenarios(50, 500), [MODULE.Scenario(50, 500)])
+
+    def test_distinct_runs_reject_reused_topology(self):
+        scenario = MODULE.Scenario(50, 500)
+        rows = [
+            {"scenario": scenario.name, "rng_run": str(run), "scheduler": "rr",
+             "status": "OK", "position_hash": position_hash}
+            for run, position_hash in ((1, "a"), (2, "b"))
+        ]
+        MODULE.validate_distinct_runs(rows, scenario)
+        rows[-1]["position_hash"] = "a"
+        with self.assertRaisesRegex(RuntimeError, "reutilizaram"):
+            MODULE.validate_distinct_runs(rows, scenario)
+
+    def test_convergence_requires_every_scheduler(self):
+        scenario = MODULE.Scenario(10, 100)
+        args = Namespace(min_runs=2, max_runs=4, batch_size=1,
+                         throughput_error=0.05, jain_error=0.01)
+        rows = []
+        for scheduler in MODULE.SCHEDULERS:
+            for run in (1, 2):
+                rows.append({
+                    "scenario": scenario.name, "scheduler": scheduler,
+                    "status": "OK", "window_throughput_mean_mbps": "100",
+                    "window_jain_mean": "0.9", "rng_run": str(run),
+                })
+        self.assertTrue(MODULE.converged(rows, scenario, args))
+        rows.pop()
+        self.assertFalse(MODULE.converged(rows, scenario, args))
+
+    def test_exact_student_t_critical(self):
+        self.assertAlmostEqual(MODULE.t_critical(0.95, 29), 2.045229642, places=7)
+
+    def test_convergence_uses_paired_differences(self):
+        scenario = MODULE.Scenario(10, 100)
+        args = Namespace(min_runs=3, max_runs=3, batch_size=1,
+                         throughput_error=0.05, jain_error=0.01)
+        rows = []
+        offsets = {"rr": 0.0, "pf": 1.0, "mr": 2.0, "qos": 3.0}
+        for run, common in enumerate((50.0, 100.0, 200.0), start=1):
+            for scheduler, offset in offsets.items():
+                rows.append({
+                    "scenario": scenario.name, "scheduler": scheduler,
+                    "status": "OK", "rng_run": str(run),
+                    "window_throughput_mean_mbps": str(common + offset),
+                    "window_jain_mean": str(0.8 + offset / 100),
+                })
+        self.assertTrue(MODULE.converged(rows, scenario, args))
+        report = MODULE.convergence_report(rows, scenario, args)
+        self.assertEqual(len(report), 12)
+        self.assertTrue(all(item["n_pairs"] == 3 for item in report))
+
+
+if __name__ == "__main__":
+    unittest.main()
