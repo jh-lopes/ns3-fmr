@@ -1,4 +1,0 @@
-Versao=Simulacao5G V1.2
-Descricao=Infraestrutura de resultados e perfis de tráfego sem alteração intencional da lógica do rádio
-typeTraffic=EMBB
-Comando=/home/julio/ns3-fmr/build/scratch/sim5G/ns3.46-simulacao-5GV2-default 

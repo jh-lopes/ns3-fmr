@@ -402,6 +402,7 @@ RegistrarJanela(Time windowSize,
                  std::string trafficProfile,
                  uint16_t ueNumPergNb,
                  uint32_t seed,
+                 uint32_t rngRun,
                  double bandwidthMhz)
 {
     double windowSeconds = windowSize.GetSeconds();
@@ -432,6 +433,7 @@ RegistrarJanela(Time windowSize,
                     << trafficProfile << ","
                     << ueNumPergNb << ","
                     << seed << ","
+                    << rngRun << ","
                     << bandwidthMhz << ","
                     << g_janelaId << ","
                     << Simulator::Now().GetSeconds() << ","
@@ -450,7 +452,7 @@ RegistrarJanela(Time windowSize,
                             &RegistrarJanela,
                             windowSize, simTime,
                             schedulerMode, trafficProfile,
-                            ueNumPergNb, seed, bandwidthMhz);
+                            ueNumPergNb, seed, rngRun, bandwidthMhz);
     }
 }
 
