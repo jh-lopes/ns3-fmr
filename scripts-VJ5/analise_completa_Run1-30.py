@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import argparse
 import csv
+import hashlib
 import json
 import math
 import sys
@@ -24,11 +25,19 @@ import pandas as pd
 import seaborn as sns
 
 SCRIPT_DIR = Path(__file__).resolve().parent
-sys.path.insert(0, str(SCRIPT_DIR))
-from analisar_bateria_test_3 import QUALITY_METRICS, paired_tests, quality_row  # noqa: E402
-from bateria_test_3 import SCHEDULERS, half_width, position_hash  # noqa: E402
-from config_graficos import (  # noqa: E402
-    SCHEDULER_COLORS, SCHEDULER_LABELS, SCHEDULER_MARKERS, setup_style,
+ROOT = SCRIPT_DIR.parent
+SCHEDULERS = ("rr", "pf", "mr", "qos")
+SCHEDULER_COLORS = {"rr": "#2E86C1", "pf": "#28B463", "mr": "#E74C3C", "qos": "#8E44AD"}
+SCHEDULER_MARKERS = {"rr": "o", "pf": "s", "mr": "^", "qos": "D"}
+SCHEDULER_LABELS = {
+    "rr": "Round Robin", "pf": "Proportional Fair", "mr": "Max Rate", "qos": "QoS",
+}
+QUALITY_METRICS = (
+    "throughput_ue_mean_mbps", "throughput_ue_median_mbps",
+    "throughput_ue_p5_mbps", "throughput_ue_p10_mbps",
+    "zero_throughput_share", "pdr_mean_pct", "pdr_p5_pct",
+    "plr_mean_pct", "plr_p95_pct", "delay_mean_p95_ms", "delay_p99_p95_ms",
+    "jain_recomputed",
 )
 
 SUFFIX = "Run1-30"
@@ -44,6 +53,149 @@ LABELS = {
     "pdr_mean_pct": "PDR médio (%)",
     "delay_p99_p95_ms": "P95 do atraso p99 entre UEs (ms)",
 }
+
+
+def setup_style() -> None:
+    try:
+        plt.style.use("seaborn-v0_8-darkgrid")
+    except OSError:
+        plt.style.use("default")
+    sns.set_context("paper", font_scale=1.2)
+    plt.rcParams.update({"figure.dpi": 300, "savefig.dpi": 300,
+                         "font.size": 11, "axes.labelsize": 12,
+                         "axes.titlesize": 14, "legend.fontsize": 11})
+
+
+def _betacf(a: float, b: float, x: float) -> float:
+    max_iterations, epsilon, floor = 200, 3e-14, 1e-300
+    qab, qap, qam = a + b, a + 1.0, a - 1.0
+    c = 1.0
+    d = 1.0 - qab * x / qap
+    d = 1.0 / max(abs(d), floor) * (1 if d >= 0 else -1)
+    result = d
+    for iteration in range(1, max_iterations + 1):
+        twice = 2 * iteration
+        coefficient = iteration * (b - iteration) * x / ((qam + twice) * (a + twice))
+        d = 1.0 + coefficient * d; d = d if abs(d) >= floor else floor
+        c = 1.0 + coefficient / c; c = c if abs(c) >= floor else floor
+        d = 1.0 / d; result *= d * c
+        coefficient = -(a + iteration) * (qab + iteration) * x / ((a + twice) * (qap + twice))
+        d = 1.0 + coefficient * d; d = d if abs(d) >= floor else floor
+        c = 1.0 + coefficient / c; c = c if abs(c) >= floor else floor
+        d = 1.0 / d; delta = d * c; result *= delta
+        if abs(delta - 1.0) <= epsilon:
+            return result
+    raise ArithmeticError("fração contínua beta não convergiu")
+
+
+def _regularized_beta(x: float, a: float, b: float) -> float:
+    if x <= 0.0: return 0.0
+    if x >= 1.0: return 1.0
+    front = math.exp(math.lgamma(a+b)-math.lgamma(a)-math.lgamma(b)
+                     + a*math.log(x)+b*math.log1p(-x))
+    if x < (a+1.0)/(a+b+2.0): return front*_betacf(a,b,x)/a
+    return 1.0-front*_betacf(b,a,1.0-x)/b
+
+
+def student_t_cdf(value: float, degrees_freedom: int) -> float:
+    if degrees_freedom < 1: raise ValueError("graus de liberdade inválidos")
+    if value == 0.0: return .5
+    beta = _regularized_beta(degrees_freedom/(degrees_freedom+value*value),
+                             degrees_freedom/2.0, .5)
+    return 1.0-beta/2.0 if value > 0 else beta/2.0
+
+
+def t_critical(confidence: float, degrees_freedom: int) -> float:
+    target=(1.0+confidence)/2.0; low,high=0.0,1.0
+    while student_t_cdf(high,degrees_freedom)<target: high*=2.0
+    for _ in range(80):
+        middle=(low+high)/2.0
+        if student_t_cdf(middle,degrees_freedom)<target: low=middle
+        else: high=middle
+    return (low+high)/2.0
+
+
+def half_width(values: list[float], confidence: float = .95) -> float:
+    if len(values)<2: return math.inf
+    return t_critical(confidence,len(values)-1)*float(np.std(values,ddof=1))/math.sqrt(len(values))
+
+
+def percentile(values: list[float], probability: float) -> float:
+    return float(np.quantile(np.asarray(values,dtype=float),probability,method="linear"))
+
+
+def jain(values: list[float]) -> float:
+    denominator=len(values)*sum(value*value for value in values)
+    return sum(values)**2/denominator if denominator else 0.0
+
+
+def position_hash(path: Path, expected_run: int) -> str:
+    rows=pd.read_csv(path)
+    if rows.empty or not pd.to_numeric(rows["rng_run"],errors="coerce").eq(expected_run).all():
+        raise RuntimeError("rng_run ausente ou divergente no ue_summary.csv")
+    payload="\n".join(
+        f"{int(row.ue_id)},{float(row.x_initial_m):.12g},{float(row.y_initial_m):.12g},{float(row.z_initial_m):.12g}"
+        for row in rows.itertuples()
+    )
+    return hashlib.sha256(payload.encode()).hexdigest()
+
+
+def resolve_output_dir(raw: str) -> Path:
+    path=Path(raw)
+    return path if path.is_absolute() else ROOT/path
+
+
+def quality_row(execution: dict[str,str]) -> dict[str,object]:
+    ue_path=resolve_output_dir(execution["output_dir"])/"ue_summary.csv"
+    rows=pd.read_csv(ue_path)
+    throughput=rows["throughput_mbps"].astype(float).tolist()
+    pdr=rows["pdr_pct"].astype(float).tolist(); plr=rows["plr_pct"].astype(float).tolist()
+    delay_mean=rows["delay_mean_ms"].astype(float).tolist(); delay_p99=rows["delay_p99_ms"].astype(float).tolist()
+    recomputed=jain(throughput); reported=float(execution["jain"])
+    return {
+        "scenario":execution["scenario"],"rng_run":int(execution["rng_run"]),
+        "scheduler":execution["scheduler"],"n_ues":len(rows),
+        "throughput_ue_mean_mbps":float(np.mean(throughput)),
+        "throughput_ue_median_mbps":float(np.median(throughput)),
+        "throughput_ue_p5_mbps":percentile(throughput,.05),
+        "throughput_ue_p10_mbps":percentile(throughput,.10),
+        "zero_throughput_count":sum(value<=0 for value in throughput),
+        "zero_throughput_share":sum(value<=0 for value in throughput)/len(rows),
+        "pdr_mean_pct":float(np.mean(pdr)),"pdr_p5_pct":percentile(pdr,.05),
+        "plr_mean_pct":float(np.mean(plr)),"plr_p95_pct":percentile(plr,.95),
+        "delay_mean_p95_ms":percentile(delay_mean,.95),
+        "delay_p99_p95_ms":percentile(delay_p99,.95),
+        "jain_reported":reported,"jain_recomputed":recomputed,
+        "jain_abs_difference":abs(reported-recomputed),"ue_summary":str(ue_path),
+    }
+
+
+def paired_tests(rows: list[dict[str,object]]) -> list[dict[str,object]]:
+    lookup={(str(row["scenario"]),int(row["rng_run"]),str(row["scheduler"])):row for row in rows}
+    tests=[]
+    for scenario in sorted({str(row["scenario"]) for row in rows}):
+        runs=sorted({int(row["rng_run"]) for row in rows if row["scenario"]==scenario})
+        for left,right in combinations(SCHEDULERS,2):
+            for metric in QUALITY_METRICS:
+                differences=[float(lookup[(scenario,run,left)][metric])-float(lookup[(scenario,run,right)][metric])
+                             for run in runs if (scenario,run,left) in lookup and (scenario,run,right) in lookup]
+                n=len(differences); mean=float(np.mean(differences)) if n else math.nan
+                sd=float(np.std(differences,ddof=1)) if n>=2 else math.nan
+                if n>=2 and sd>0:
+                    statistic=mean/(sd/math.sqrt(n)); p_value=2*(1-student_t_cdf(abs(statistic),n-1)); effect=mean/sd
+                elif n>=2:
+                    statistic=math.inf if mean else 0.0; p_value=0.0 if mean else 1.0; effect=math.inf if mean else 0.0
+                else: statistic=p_value=effect=math.nan
+                tests.append({"scenario":scenario,"comparison":f"{left}-{right}","metric":metric,
+                              "n_pairs":n,"mean_difference":mean,"ic95_half_width":half_width(differences),
+                              "cohen_dz":effect,"t_statistic":statistic,"p_value":p_value,
+                              "left_win_share":sum(value>0 for value in differences)/n if n else math.nan,
+                              "ties":sum(value==0 for value in differences)})
+    ordered=sorted(range(len(tests)),key=lambda index:float(tests[index]["p_value"])); running=0.0
+    for rank,index in enumerate(ordered):
+        running=max(running,min(1.0,(len(ordered)-rank)*float(tests[index]["p_value"])))
+        tests[index]["p_value_holm"]=running
+    return tests
 
 
 def output_dirs(root: Path) -> dict[str, Path]:
@@ -181,7 +333,6 @@ def quality_data(executions: pd.DataFrame) -> pd.DataFrame:
 
 def ue_data(executions: pd.DataFrame) -> pd.DataFrame:
     frames = []
-    from analisar_bateria_test_3 import resolve_output_dir
     for row in executions[executions["status"] == "OK"].to_dict("records"):
         path = resolve_output_dir(str(row["output_dir"])) / "ue_summary.csv"
         frame = pd.read_csv(path)
@@ -194,7 +345,6 @@ def ue_data(executions: pd.DataFrame) -> pd.DataFrame:
 
 def window_data(executions: pd.DataFrame) -> pd.DataFrame:
     frames = []
-    from analisar_bateria_test_3 import resolve_output_dir
     for row in executions[executions["status"] == "OK"].to_dict("records"):
         path = resolve_output_dir(str(row["output_dir"])) / "window_log.csv"
         if not path.exists() or path.stat().st_size == 0:

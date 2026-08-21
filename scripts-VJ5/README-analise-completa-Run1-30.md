@@ -4,6 +4,10 @@ O script `analise_completa_Run1-30.py` audita e analisa as 30 primeiras runs
 pareadas da Bateria 3. Ele não soma os quatro schedulers: RR, PF, MR e QoS são
 políticas alternativas e são comparadas dentro do mesmo `rngRun`.
 
+O arquivo é autocontido: não importa `analisar_bateria_test_3.py`,
+`bateria_test_3.py` nem `config_graficos.py`. Basta copiar o script principal e
+instalar as bibliotecas listadas no arquivo de requisitos.
+
 ## Instalação
 
 ```bash
