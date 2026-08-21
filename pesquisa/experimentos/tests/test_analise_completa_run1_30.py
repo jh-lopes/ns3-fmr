@@ -1,5 +1,7 @@
 import importlib.util
+import csv
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 
@@ -61,6 +63,33 @@ class AnaliseCompletaRun130Tests(unittest.TestCase):
         curve = MODULE.jmin_curve(data, quality, np.array([.90, .92, .94]))
         self.assertEqual(float(curve.loc[curve.jmin == .90, "throughput_mean"].iloc[0]), 103.0)
         self.assertEqual(float(curve.loc[curve.jmin == .94, "feasibility"].iloc[0]), 0.0)
+
+    def test_discovers_runs_directly_from_scenario_directory(self):
+        with tempfile.TemporaryDirectory() as directory:
+            scenario = Path(directory) / "static_random_50ues_500m"
+            for scheduler in MODULE.SCHEDULERS:
+                output = scenario / "run_001" / scheduler
+                output.mkdir(parents=True)
+                with (output / "ue_summary.csv").open("w", newline="") as handle:
+                    writer = csv.DictWriter(handle, fieldnames=(
+                        "ue_id", "rng_run", "x_initial_m", "y_initial_m",
+                        "z_initial_m", "throughput_agregado_mbps", "jain_vazao",
+                    ))
+                    writer.writeheader()
+                    writer.writerow({"ue_id": 0, "rng_run": 1, "x_initial_m": 10,
+                                     "y_initial_m": 20, "z_initial_m": 1.5,
+                                     "throughput_agregado_mbps": 100,
+                                     "jain_vazao": .9})
+                with (output / "window_log.csv").open("w", newline="") as handle:
+                    writer = csv.DictWriter(handle, fieldnames=(
+                        "aggregate_thr_mbps", "jain_throughput"))
+                    writer.writeheader()
+                    writer.writerow({"aggregate_thr_mbps": 99,
+                                     "jain_throughput": .89})
+            found = MODULE.discover_executions(scenario, 1, 1)
+            self.assertEqual(len(found), 4)
+            self.assertTrue(found["status"].eq("OK").all())
+            self.assertTrue(found["position_hash"].nunique() == 1)
 
 
 if __name__ == "__main__":

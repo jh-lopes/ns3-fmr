@@ -17,11 +17,19 @@ python3 -m pip install -r scripts-VJ5/requirements-analise-Run1-30.txt
 
 ```bash
 python3 scripts-VJ5/analise_completa_Run1-30.py \
-  --input pesquisa/resultados/3_bateria_test_3/executions.csv \
+  --scenario-dir pesquisa/resultados/3_bateria_test_3/static_random_50ues_500m \
   --output pesquisa/resultados/3_bateria_test_3/Analise_Completa_Run1-30 \
   --first-run 1 \
   --last-run 30 \
   --bootstrap 1000
+```
+
+O pipeline lê diretamente `run_001` até `run_030` e reconstrói o ledger a
+partir de `ue_summary.csv` e `window_log.csv`. Se o ledger original estiver
+disponível e for preferível usá-lo, substitua `--scenario-dir ...` por:
+
+```bash
+--input pesquisa/resultados/3_bateria_test_3/executions.csv
 ```
 
 Por padrão, a auditoria é estrita: se alguma run não contiver exatamente RR,

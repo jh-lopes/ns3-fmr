@@ -26,7 +26,7 @@ import seaborn as sns
 SCRIPT_DIR = Path(__file__).resolve().parent
 sys.path.insert(0, str(SCRIPT_DIR))
 from analisar_bateria_test_3 import QUALITY_METRICS, paired_tests, quality_row  # noqa: E402
-from bateria_test_3 import SCHEDULERS, half_width  # noqa: E402
+from bateria_test_3 import SCHEDULERS, half_width, position_hash  # noqa: E402
 from config_graficos import (  # noqa: E402
     SCHEDULER_COLORS, SCHEDULER_LABELS, SCHEDULER_MARKERS, setup_style,
 )
@@ -89,6 +89,48 @@ def read_executions(path: Path, first: int, last: int) -> pd.DataFrame:
     for column in PRIMARY:
         data[column] = pd.to_numeric(data[column], errors="coerce")
     return data
+
+
+def discover_executions(scenario_dir: Path, first: int, last: int) -> pd.DataFrame:
+    """Reconstrói o ledger diretamente dos diretórios run_NNN/scheduler."""
+    rows = []
+    for run in range(first, last + 1):
+        for scheduler in SCHEDULERS:
+            output = scenario_dir / f"run_{run:03d}" / scheduler
+            ue_path = output / "ue_summary.csv"
+            window_path = output / "window_log.csv"
+            problems = []
+            if not ue_path.exists() or ue_path.stat().st_size == 0:
+                problems.append("ue_summary.csv ausente/vazio")
+            if not window_path.exists() or window_path.stat().st_size == 0:
+                problems.append("window_log.csv ausente/vazio")
+            row = {
+                "scenario": scenario_dir.name, "scheduler": scheduler,
+                "rng_run": run, "status": "ERROR" if problems else "OK",
+                "output_dir": str(output.resolve()), "throughput_mbps": math.nan,
+                "jain": math.nan, "window_throughput_mean_mbps": math.nan,
+                "window_jain_mean": math.nan, "position_hash": "",
+                "error": "; ".join(problems),
+            }
+            if not problems:
+                ue = pd.read_csv(ue_path)
+                windows = pd.read_csv(window_path)
+                if ue.empty or windows.empty:
+                    row["status"] = "ERROR"; row["error"] = "CSV sem registros"
+                else:
+                    ue_run = pd.to_numeric(ue["rng_run"], errors="coerce")
+                    if ue_run.isna().any() or not ue_run.eq(run).all():
+                        row["status"] = "ERROR"; row["error"] = "rng_run divergente"
+                    else:
+                        row.update({
+                            "throughput_mbps": float(ue["throughput_agregado_mbps"].iloc[0]),
+                            "jain": float(ue["jain_vazao"].iloc[0]),
+                            "window_throughput_mean_mbps": float(windows["aggregate_thr_mbps"].mean()),
+                            "window_jain_mean": float(windows["jain_throughput"].mean()),
+                            "position_hash": position_hash(ue_path, run),
+                        })
+            rows.append(row)
+    return pd.DataFrame(rows)
 
 
 def audit(executions: pd.DataFrame, first: int, last: int) -> tuple[pd.DataFrame, list[str]]:
@@ -531,7 +573,10 @@ def report(path: Path, audit_data: pd.DataFrame, desc: pd.DataFrame,
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--input", type=Path, default=Path("pesquisa/resultados/3_bateria_test_3/executions.csv"))
+    parser.add_argument("--input", type=Path,
+                        help="executions.csv; se omitido, reconstrói a partir de --scenario-dir")
+    parser.add_argument("--scenario-dir", type=Path, default=Path(
+        "pesquisa/resultados/3_bateria_test_3/static_random_50ues_500m"))
     parser.add_argument("--output", type=Path, default=Path("pesquisa/resultados/3_bateria_test_3/Analise_Completa_Run1-30"))
     parser.add_argument("--first-run", type=int, default=1)
     parser.add_argument("--last-run", type=int, default=30)
@@ -545,7 +590,9 @@ def main() -> int:
     if args.first_run != 1 or args.last_run != 30:
         raise SystemExit("Este artefato é identificado como Run1-30; use exatamente --first-run 1 --last-run 30")
     dirs = output_dirs(args.output)
-    executions = read_executions(args.input, args.first_run, args.last_run)
+    executions = (read_executions(args.input, args.first_run, args.last_run)
+                  if args.input else discover_executions(
+                      args.scenario_dir, args.first_run, args.last_run))
     audit_data, errors = audit(executions, args.first_run, args.last_run)
     audit_data.to_csv(dirs["audit"] / f"Auditoria_{SUFFIX}.csv", index=False)
     if errors and not args.allow_incomplete:
@@ -615,7 +662,8 @@ def main() -> int:
     ]
     report(dirs["report"] / f"Relatorio_Resultados_{SUFFIX}.md", audit_data, desc,
            selections, curve, bootstrap, assumptions)
-    metadata={"input":str(args.input.resolve()),"runs":[1,30],"valid_runs":sorted(valid_runs),
+    source = args.input.resolve() if args.input else args.scenario_dir.resolve()
+    metadata={"input":str(source),"runs":[1,30],"valid_runs":sorted(valid_runs),
               "assumptions":assumptions,"jmin":selections,"bootstrap":args.bootstrap,"seed":args.seed}
     (dirs["report"] / f"Metadata_{SUFFIX}.json").write_text(json.dumps(metadata,indent=2,ensure_ascii=False)+"\n")
     print(f"Análise completa gerada em: {args.output}")
