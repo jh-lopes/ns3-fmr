@@ -13,6 +13,7 @@ import subprocess
 import sys
 import threading
 import time
+from itertools import combinations
 from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 from dataclasses import dataclass
 from pathlib import Path
@@ -181,6 +182,15 @@ def append_row(path: Path, row: dict[str, object]) -> None:
         writer.writerow(row)
 
 
+def write_rows(path: Path, rows: list[dict[str, object]]) -> None:
+    if not rows:
+        return
+    with path.open("w", newline="", encoding="utf-8") as handle:
+        writer = csv.DictWriter(handle, fieldnames=rows[0].keys())
+        writer.writeheader()
+        writer.writerows(rows)
+
+
 def resolve_binary(configured: Path | None) -> Path:
     candidates = [configured] if configured else [
         *sorted((ROOT / "build/scratch").glob("ns3.*-simulacao-vj5g-optimized")),
@@ -272,28 +282,157 @@ def run_one(args: argparse.Namespace, scenario: Scenario, scheduler: str,
     return row
 
 
-def half_width(values: list[float]) -> float:
+def _betacf(a: float, b: float, x: float) -> float:
+    """Continued fraction for the regularized incomplete beta function."""
+    max_iterations, epsilon, floor = 200, 3e-14, 1e-300
+    qab, qap, qam = a + b, a + 1.0, a - 1.0
+    c = 1.0
+    d = 1.0 - qab * x / qap
+    d = 1.0 / max(abs(d), floor) * (1 if d >= 0 else -1)
+    result = d
+    for iteration in range(1, max_iterations + 1):
+        twice = 2 * iteration
+        coefficient = iteration * (b - iteration) * x / (
+            (qam + twice) * (a + twice)
+        )
+        d = 1.0 + coefficient * d
+        d = d if abs(d) >= floor else floor
+        c = 1.0 + coefficient / c
+        c = c if abs(c) >= floor else floor
+        d = 1.0 / d
+        result *= d * c
+        coefficient = -(a + iteration) * (qab + iteration) * x / (
+            (a + twice) * (qap + twice)
+        )
+        d = 1.0 + coefficient * d
+        d = d if abs(d) >= floor else floor
+        c = 1.0 + coefficient / c
+        c = c if abs(c) >= floor else floor
+        d = 1.0 / d
+        delta = d * c
+        result *= delta
+        if abs(delta - 1.0) <= epsilon:
+            return result
+    raise ArithmeticError("fração contínua beta não convergiu")
+
+
+def _regularized_beta(x: float, a: float, b: float) -> float:
+    if x <= 0.0:
+        return 0.0
+    if x >= 1.0:
+        return 1.0
+    front = math.exp(
+        math.lgamma(a + b) - math.lgamma(a) - math.lgamma(b)
+        + a * math.log(x) + b * math.log1p(-x)
+    )
+    if x < (a + 1.0) / (a + b + 2.0):
+        return front * _betacf(a, b, x) / a
+    return 1.0 - front * _betacf(b, a, 1.0 - x) / b
+
+
+def student_t_cdf(value: float, degrees_freedom: int) -> float:
+    """CDF de Student sem depender de SciPy."""
+    if degrees_freedom < 1:
+        raise ValueError("degrees_freedom deve ser positivo")
+    if value == 0.0:
+        return 0.5
+    beta = _regularized_beta(
+        degrees_freedom / (degrees_freedom + value * value),
+        degrees_freedom / 2.0,
+        0.5,
+    )
+    return 1.0 - beta / 2.0 if value > 0 else beta / 2.0
+
+
+def t_critical(confidence: float, degrees_freedom: int) -> float:
+    """Quantil bilateral exato da distribuição t por busca numérica."""
+    if not 0.0 < confidence < 1.0:
+        raise ValueError("confidence deve estar entre zero e um")
+    target = (1.0 + confidence) / 2.0
+    low, high = 0.0, 1.0
+    while student_t_cdf(high, degrees_freedom) < target:
+        high *= 2.0
+    for _ in range(80):
+        middle = (low + high) / 2.0
+        if student_t_cdf(middle, degrees_freedom) < target:
+            low = middle
+        else:
+            high = middle
+    return (low + high) / 2.0
+
+
+def half_width(values: list[float], confidence: float = 0.95) -> float:
     if len(values) < 2:
         return math.inf
-    # Conservador para n >= 30; converge a 1,984 até n=100.
-    critical = 2.045 if len(values) <= 30 else 2.023 if len(values) <= 40 else 2.01
+    critical = t_critical(confidence, len(values) - 1)
     return critical * stdev(values) / math.sqrt(len(values))
+
+
+def planned_looks(args: argparse.Namespace) -> list[int]:
+    """Tamanhos amostrais nos quais a regra sequencial pode encerrar."""
+    looks = list(range(args.min_runs, args.max_runs + 1, args.batch_size))
+    if looks[-1] != args.max_runs:
+        looks.append(args.max_runs)
+    return looks
+
+
+def paired_metric_values(rows: list[dict[str, str]], scenario: Scenario,
+                         left: str, right: str, column: str) -> tuple[list[float], list[float]]:
+    by_run: dict[int, dict[str, float]] = {}
+    for row in rows:
+        if row["scenario"] != scenario.name or row["status"] != "OK":
+            continue
+        scheduler = row["scheduler"]
+        if scheduler in (left, right):
+            by_run.setdefault(int(row["rng_run"]), {})[scheduler] = float(row[column])
+    differences, scales = [], []
+    for values in by_run.values():
+        if left in values and right in values:
+            differences.append(values[left] - values[right])
+            scales.append((abs(values[left]) + abs(values[right])) / 2.0)
+    return differences, scales
+
+
+def convergence_report(rows: list[dict[str, str]], scenario: Scenario,
+                       args: argparse.Namespace) -> list[dict[str, object]]:
+    """Precisão dos contrastes pareados, com correção por looks/comparações."""
+    pairs = list(combinations(SCHEDULERS, 2))
+    comparisons = len(pairs) * 2
+    looks = planned_looks(args)
+    alpha = 0.05 / (comparisons * len(looks))
+    confidence = 1.0 - alpha
+    report = []
+    for left, right in pairs:
+        for metric, column, threshold, relative in (
+            ("throughput", "window_throughput_mean_mbps",
+             args.throughput_error, True),
+            ("jain", "window_jain_mean", args.jain_error, False),
+        ):
+            differences, scales = paired_metric_values(
+                rows, scenario, left, right, column
+            )
+            width = half_width(differences, confidence)
+            scale = fmean(scales) if scales else 0.0
+            precision = width / scale if relative and scale else width
+            report.append({
+                "scenario": scenario.name,
+                "comparison": f"{left}-{right}",
+                "metric": metric,
+                "n_pairs": len(differences),
+                "mean_difference": fmean(differences) if differences else math.nan,
+                "confidence": confidence,
+                "half_width": width,
+                "precision": precision,
+                "threshold": threshold,
+                "converged": len(differences) >= args.min_runs and precision <= threshold,
+            })
+    return report
 
 
 def converged(rows: list[dict[str, str]], scenario: Scenario,
               args: argparse.Namespace) -> bool:
-    for scheduler in SCHEDULERS:
-        selected = [row for row in rows if row["scenario"] == scenario.name
-                    and row["scheduler"] == scheduler and row["status"] == "OK"]
-        if len(selected) < args.min_runs:
-            return False
-        throughput = [float(row["window_throughput_mean_mbps"]) for row in selected]
-        jain = [float(row["window_jain_mean"]) for row in selected]
-        if half_width(throughput) / abs(fmean(throughput)) > args.throughput_error:
-            return False
-        if half_width(jain) > args.jain_error:
-            return False
-    return True
+    report = convergence_report(rows, scenario, args)
+    return bool(report) and all(bool(item["converged"]) for item in report)
 
 
 def validate_pairing(rows: list[dict[str, str]], scenario: Scenario,
@@ -399,7 +538,7 @@ def parse_args() -> argparse.Namespace:
     args.sim_binary = resolve_binary(args.sim_binary)
     if (args.workers < 1 or args.ue_count < 2 or args.radius_m <= 10
             or args.bandwidth <= 0 or args.lambda_pps <= 0
-            or not 1 <= args.min_runs <= args.max_runs):
+            or not 1 <= args.min_runs <= args.max_runs or args.batch_size < 1):
         parser.error("parâmetros físicos/estatísticos inválidos")
     return args
 
@@ -468,6 +607,10 @@ def main() -> int:
                 print("Execução com erro; corrija e retome usando o mesmo output.")
                 return 2
         rows = read_rows(ledger)
+        write_rows(
+            args.output / "convergence_paired.csv",
+            convergence_report(rows, scenario, args),
+        )
         report_data_quality(rows, scenario)
     return 0
 

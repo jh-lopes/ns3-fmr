@@ -15,14 +15,27 @@ mantém parados durante os 30 s simulados. Portanto, ela representa diferentes
 - schedulers: RR, PF, MR e QoS;
 - mesma `seed` e mesmo `rngRun` para os quatro schedulers (análise pareada);
 - nova topologia quando `rngRun` muda;
-- 30 replicações mínimas, ampliadas em lotes de 10 até 100 enquanto o IC95%
-  relativo de throughput for maior que 5% ou a meia largura absoluta do IC95%
-  de Jain for maior que 0,01.
+- 30 replicações mínimas, ampliadas em pontos de inspeção pré-especificados de
+  10 em 10 até 100;
+- a parada usa os seis contrastes pareados entre schedulers, e não quatro ICs
+  marginais: exige meia largura relativa do contraste de throughput de até 5%
+  e meia largura absoluta do contraste de Jain de até 0,01;
+- o nível de confiança usa o quantil exato de Student e uma correção de
+  Bonferroni conjunta para 12 contrastes (seis pares × duas métricas) e para
+  todos os pontos de inspeção. Isso preserva o erro familiar de 5% apesar da
+  parada sequencial.
 
 O orquestrador calcula um hash das coordenadas e interrompe a bateria se os
 schedulers de um mesmo `rngRun` receberem topologias diferentes. O
 `ue_summary.csv` registra `seed`, `rng_run`, modo de posição, limite espacial e
 coordenadas iniciais.
+
+Ao terminar, `convergence_paired.csv` documenta cada contraste, tamanho
+pareado, nível de confiança ajustado, meia largura, limite e decisão. Para não
+interpretar Jain isoladamente, execute `analisar_bateria_test_3.py`: ele produz
+percentis 5/10 e mediana de vazão por UE, UEs sem vazão, PDR/PLR e caudas de
+atraso, recalcula Jain e gera testes pareados com tamanho de efeito e correção
+de Holm.
 
 Com 50 UEs, a carga de 300 Mbps fica ligeiramente acima da vazão agregada de
 aproximadamente 260--275 Mbps observada nas baterias anteriores. Isso mantém
@@ -71,6 +84,21 @@ PY
 
 O primeiro resultado deve ser sempre `1`. No segundo, runs distintas devem ter
 hashes distintos.
+
+## Análise complementar por UE
+
+```bash
+python3 scripts-VJ5/analisar_bateria_test_3.py \
+  --input pesquisa/resultados/bateria_test_3/executions.csv \
+  --output pesquisa/resultados/bateria_test_3/analysis
+```
+
+Artefatos:
+
+- `qualidade_ue_por_run.csv`: métricas de distribuição por run/scheduler;
+- `qualidade_ue_resumo_ic95.csv`: médias e IC95% por scheduler;
+- `comparacoes_pareadas_ue.csv`: diferenças pareadas, IC95%, Cohen \(d_z\),
+  proporção de vitórias e valor-p corrigido por Holm.
 
 ## Bateria completa
 

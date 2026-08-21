@@ -92,7 +92,8 @@ class BateriaTest3Tests(unittest.TestCase):
 
     def test_convergence_requires_every_scheduler(self):
         scenario = MODULE.Scenario(10, 100)
-        args = Namespace(min_runs=2, throughput_error=0.05, jain_error=0.01)
+        args = Namespace(min_runs=2, max_runs=4, batch_size=1,
+                         throughput_error=0.05, jain_error=0.01)
         rows = []
         for scheduler in MODULE.SCHEDULERS:
             for run in (1, 2):
@@ -104,6 +105,28 @@ class BateriaTest3Tests(unittest.TestCase):
         self.assertTrue(MODULE.converged(rows, scenario, args))
         rows.pop()
         self.assertFalse(MODULE.converged(rows, scenario, args))
+
+    def test_exact_student_t_critical(self):
+        self.assertAlmostEqual(MODULE.t_critical(0.95, 29), 2.045229642, places=7)
+
+    def test_convergence_uses_paired_differences(self):
+        scenario = MODULE.Scenario(10, 100)
+        args = Namespace(min_runs=3, max_runs=3, batch_size=1,
+                         throughput_error=0.05, jain_error=0.01)
+        rows = []
+        offsets = {"rr": 0.0, "pf": 1.0, "mr": 2.0, "qos": 3.0}
+        for run, common in enumerate((50.0, 100.0, 200.0), start=1):
+            for scheduler, offset in offsets.items():
+                rows.append({
+                    "scenario": scenario.name, "scheduler": scheduler,
+                    "status": "OK", "rng_run": str(run),
+                    "window_throughput_mean_mbps": str(common + offset),
+                    "window_jain_mean": str(0.8 + offset / 100),
+                })
+        self.assertTrue(MODULE.converged(rows, scenario, args))
+        report = MODULE.convergence_report(rows, scenario, args)
+        self.assertEqual(len(report), 12)
+        self.assertTrue(all(item["n_pairs"] == 3 for item in report))
 
 
 if __name__ == "__main__":

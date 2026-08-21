@@ -1,0 +1,54 @@
+\subsection{Distribuição radial uniforme dos terminais}
+\label{subsec:distribuicao-radial-uniforme}
+
+Na Bateria Test 3, a posição inicial de cada equipamento de usuário
+(\textit{User Equipment}--UE) é sorteada em coordenadas polares. O ângulo
+$\Theta$ é uniforme no intervalo $[0,2\pi)$ e a distância radial $R$ é uniforme
+entre $r_{\min}=10\,\mathrm{m}$ e $r_{\max}=500\,\mathrm{m}$:
+\begin{equation}
+  \Theta \sim \mathcal{U}(0,2\pi),
+  \qquad
+  R \sim \mathcal{U}(r_{\min},r_{\max}).
+\end{equation}
+As coordenadas cartesianas são obtidas por
+\begin{equation}
+  X=R\cos\Theta,
+  \qquad
+  Y=R\sin\Theta,
+  \qquad
+  Z=1{,}5\,\mathrm{m}.
+\end{equation}
+Consequentemente, a função densidade da distância é
+\begin{equation}
+  f_R(r)=\frac{1}{r_{\max}-r_{\min}},
+  \quad r_{\min}\leq r\leq r_{\max}.
+\end{equation}
+Esse desenho atribui a mesma probabilidade a intervalos radiais de igual
+largura. Por exemplo, desconsiderando efeitos de borda, um anel de $10\,$m
+próximo à estação base contém a mesma probabilidade que um anel de $10\,$m
+próximo ao limite de cobertura. Como a área do anel cresce com o raio, a
+densidade de UEs por unidade de área não é constante. A densidade espacial
+resultante é proporcional a
+\begin{equation}
+  f_{X,Y}(x,y)=
+  \frac{1}{2\pi(r_{\max}-r_{\min})\sqrt{x^2+y^2}},
+\end{equation}
+no anel $r_{\min}\leq\sqrt{x^2+y^2}\leq r_{\max}$.
+
+Essa escolha é intencional: o objetivo não é reproduzir uma população
+uniforme por metro quadrado, mas obter cobertura aproximadamente equilibrada
+das diferentes faixas de distância e, assim, submeter os escalonadores a uma
+amostra ampla de condições de canal, do centro à borda. Em cada
+\texttt{rngRun}, uma nova topologia é sorteada. Dentro da mesma
+\texttt{rngRun}, RR, PF, MR e QoS recebem exatamente as mesmas coordenadas,
+permitindo contrastes pareados. Os UEs permanecem estáticos durante os
+$30\,$s simulados; portanto, cada replicação representa um instantâneo de
+implantação, e não uma trajetória de mobilidade.
+
+Uma distribuição uniforme em área exigiria, em contraste,
+\begin{equation}
+ R=\sqrt{r_{\min}^{2}+U(r_{\max}^{2}-r_{\min}^{2})},
+ \qquad U\sim\mathcal{U}(0,1),
+\end{equation}
+e produziria mais terminais nos anéis externos. Essa alternativa não é usada
+na Bateria Test 3 e deve ser tratada como outro cenário experimental.
