@@ -432,6 +432,28 @@ RxWindowCallback(uint32_t ueIdx, uint32_t flowIdx, Ptr<const Packet> packet)
     }
 }
 
+// O modelo HTTP 3GPP usa TCP e não carrega SeqTsHeader. Nesse caso, o trace
+// Rx do cliente representa bytes já entregues à aplicação (retransmissões TCP
+// não aparecem novamente), mas não permite reconstruir atraso/PDR por objeto.
+inline void
+RxHttpCallback(uint32_t ueIdx, Ptr<const Packet> packet)
+{
+    if (ueIdx >= g_bytesRecebidosPorUe.size())
+    {
+        return;
+    }
+    const uint64_t bytes = packet->GetSize();
+    ++g_pacotesRecebidosPorUe[ueIdx];
+    g_bytesRecebidosPorUe[ueIdx] += bytes;
+    ++g_appRxStats[ueIdx].totalUniquePackets;
+    g_appRxStats[ueIdx].totalBytes += bytes;
+    if (Simulator::Now() <= g_trafficStopTime)
+    {
+        ++g_appRxStats[ueIdx].trafficUniquePackets;
+        g_appRxStats[ueIdx].trafficBytes += bytes;
+    }
+}
+
 // ------------------------------------------------------------
 // RegistrarJanela()
 //

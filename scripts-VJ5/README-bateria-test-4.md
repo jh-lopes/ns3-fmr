@@ -3,6 +3,11 @@
 A Bateria 4 repete o cenário eMBB pareado de 50 UEs corrigindo as limitações
 identificadas na Bateria 3.
 
+Ela também executa três cargas de aplicação independentes: `udp`, `http`
+(modelo web browsing 3GPP sobre TCP) e `mixed`, no qual UEs pares usam UDP e
+UEs ímpares usam HTTP. Cada carga possui seu próprio conjunto pareado de runs;
+resultados de aplicações diferentes não são tratados como replicações.
+
 ## Correções incorporadas
 
 - posições estáticas uniformes **por área** no anel de 10 m ao raio configurado;
@@ -41,7 +46,8 @@ python3 scripts-VJ5/bateria_test_4.py --smoke --no-progress
 ```
 
 O smoke executa uma run de 1 s de tráfego + 1 s de drain para RR, PF, MR e
-QoS, valida topologia e reconcilia os contadores.
+QoS nos modos UDP, HTTP e misto. Para testar apenas UDP, acrescente
+`--application-modes udp`.
 
 ## Campanha
 
@@ -51,6 +57,7 @@ python3 scripts-VJ5/bateria_test_4.py \
   --ue-count 50 \
   --radius-m 500 \
   --lambda-pps 500 \
+  --application-modes udp,http,mixed \
   --sim-time 30 \
   --drain-time 15 \
   --flow-max-per-hop-delay 60 \
@@ -103,3 +110,9 @@ Para entrega eventual após o drain, use:
 
 As colunas `flowmon_*` são mantidas como instrumento de reconciliação e não
 como fonte principal da análise.
+
+No modo HTTP, o trace `Rx` do cliente 3GPP representa fragmentos entregues à
+aplicação TCP, não datagramas com `SeqTsHeader`. Por isso, atraso/PDR de
+aplicação e igualdade da quantidade de pacotes com o FlowMonitor são critérios
+exclusivos do modo UDP. Vazão, goodput, Jain e janelas continuam sendo medidos
+na aplicação em todos os modos.

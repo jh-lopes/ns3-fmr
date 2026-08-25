@@ -27,7 +27,7 @@ RESULT_RE = re.compile(
     r"jain_vazao=([0-9.eE+-]+).*?rng_run=([0-9]+)"
 )
 FIELDS = (
-    "scenario", "ue_count", "radius_m", "bandwidth_hz", "lambda_pps",
+    "scenario", "application_mode", "ue_count", "radius_m", "bandwidth_hz", "lambda_pps",
     "offered_load_mbps", "traffic_stop_s", "drain_time_s", "total_stop_s",
     "flow_max_per_hop_delay_s", "window_ms", "scheduler", "seed", "rng_run",
     "app_throughput_traffic_mbps", "app_goodput_total_mbps",
@@ -44,10 +44,12 @@ FIELDS = (
 class Scenario:
     ue_count: int
     radius_m: int
+    application_mode: str = "udp"
 
     @property
     def name(self) -> str:
-        return f"static_uniform_area_{self.ue_count}ues_{self.radius_m}m"
+        return (f"{self.application_mode}_static_uniform_area_"
+                f"{self.ue_count}ues_{self.radius_m}m")
 
 
 class ProgressPanel:
@@ -166,9 +168,10 @@ def run_one_with_progress(args: argparse.Namespace, scenario: Scenario,
     return row
 
 
-def scenarios(ue_count: int, radius_m: int) -> list[Scenario]:
-    """Retorna somente o cenário controlado solicitado para a Bateria 4."""
-    return [Scenario(ue_count, radius_m)]
+def scenarios(ue_count: int, radius_m: int,
+              application_modes: tuple[str, ...] = ("udp",)) -> list[Scenario]:
+    """Cria cenários pareados separados para UDP, HTTP e tráfego misto."""
+    return [Scenario(ue_count, radius_m, mode) for mode in application_modes]
 
 
 def read_rows(path: Path) -> list[dict[str, str]]:
@@ -215,6 +218,15 @@ def sha256_file(path: Path) -> str:
     return digest.hexdigest()
 
 
+def udp_offered_load_mbps(scenario: Scenario, lambda_pps: int) -> float | None:
+    """Carga UDP determinística; HTTP 3GPP é estocástico e não usa lambda."""
+    if scenario.application_mode == "http":
+        return None
+    udp_ues = (scenario.ue_count if scenario.application_mode == "udp"
+               else (scenario.ue_count + 1) // 2)
+    return udp_ues * lambda_pps * 1500 * 8 / 1e6
+
+
 def read_csv_required(path: Path, required: set[str]) -> list[dict[str, str]]:
     if not path.exists() or path.stat().st_size == 0:
         raise RuntimeError(f"{path.name} ausente ou vazio")
@@ -231,9 +243,10 @@ def read_csv_required(path: Path, required: set[str]) -> list[dict[str, str]]:
 
 def validate_corrected_outputs(ue_path: Path, window_path: Path,
                                expected_run: int, expected_ues: int,
-                               radius_m: float) -> dict[str, float]:
+                               radius_m: float,
+                               application_mode: str = "udp") -> dict[str, float]:
     ue_rows = read_csv_required(ue_path, {
-        "rng_run", "ue_id", "x_initial_m", "y_initial_m", "z_initial_m",
+        "rng_run", "application_mode", "ue_id", "x_initial_m", "y_initial_m", "z_initial_m",
         "distance_gnb_m", "app_throughput_traffic_mbps",
         "app_goodput_total_mbps", "app_jain_traffic", "app_jain_total",
         "flowmon_throughput_mbps", "flowmon_jain", "app_rx_packets_total",
@@ -250,6 +263,8 @@ def validate_corrected_outputs(ue_path: Path, window_path: Path,
     for row in ue_rows:
         if int(row["rng_run"]) != expected_run:
             raise RuntimeError("rng_run divergente no ue_summary")
+        if row["application_mode"] != application_mode:
+            raise RuntimeError("application_mode divergente no ue_summary")
         x, y, z = (float(row[name]) for name in
                    ("x_initial_m", "y_initial_m", "z_initial_m"))
         radius = math.hypot(x, y)
@@ -287,7 +302,10 @@ def validate_corrected_outputs(ue_path: Path, window_path: Path,
     flow_rx = sum(int(row["flowmon_rx_packets"]) for row in ue_rows)
     # Com MaxPerHopDelay maior que toda a simulação, os instrumentos devem
     # concordar em contagem. Divergência revela nova censura/instrumentação.
-    if app_rx != flow_rx:
+    # UDP oferece equivalência pacote a pacote. HTTP/TCP entrega segmentos ao
+    # trace da aplicação, portanto sua reconciliação correta é por bytes e não
+    # pela quantidade de eventos Rx/segmentos do FlowMonitor.
+    if application_mode == "udp" and app_rx != flow_rx:
         raise RuntimeError(
             f"UdpServer/FlowMonitor divergem: app={app_rx}, flowmon={flow_rx}")
 
@@ -328,7 +346,8 @@ def run_one(args: argparse.Namespace, scenario: Scenario, scheduler: str,
     flow = output / "flow_summary.csv"
     command = [
         str(args.sim_binary), f"--schedulerMode={scheduler}",
-        "--trafficProfile=embb", f"--ueNumPergNb={scenario.ue_count}",
+        "--trafficProfile=embb", f"--applicationMode={scenario.application_mode}",
+        f"--ueNumPergNb={scenario.ue_count}",
         f"--simTime={args.sim_time}s", f"--seed={args.seed}",
         f"--drainTime={args.drain_time}s",
         f"--FlowMaxPerHopDelay={args.flow_max_per_hop_delay}s",
@@ -351,6 +370,7 @@ def run_one(args: argparse.Namespace, scenario: Scenario, scheduler: str,
         "battery": 4,
         "scenario": scenario.name,
         "scheduler": scheduler,
+        "application_mode": scenario.application_mode,
         "seed": args.seed,
         "rng_run": rng_run,
         "ue_count": scenario.ue_count,
@@ -362,7 +382,7 @@ def run_one(args: argparse.Namespace, scenario: Scenario, scheduler: str,
         "numerology": args.numerology,
         "packet_size_bytes": 1500,
         "lambda_pps": args.lambda_pps,
-        "offered_load_mbps": scenario.ue_count * args.lambda_pps * 1500 * 8 / 1e6,
+        "offered_load_mbps": udp_offered_load_mbps(scenario, args.lambda_pps),
         "traffic_stop_s": args.sim_time,
         "drain_time_s": args.drain_time,
         "total_stop_s": args.sim_time + args.drain_time,
@@ -384,10 +404,11 @@ def run_one(args: argparse.Namespace, scenario: Scenario, scheduler: str,
     console = proc.stdout + proc.stderr
     (output / "console.log").write_text(console, encoding="utf-8")
     row: dict[str, object] = {
-        "scenario": scenario.name, "ue_count": scenario.ue_count,
+        "scenario": scenario.name, "application_mode": scenario.application_mode,
+        "ue_count": scenario.ue_count,
         "radius_m": scenario.radius_m, "bandwidth_hz": args.bandwidth,
         "lambda_pps": args.lambda_pps,
-        "offered_load_mbps": scenario.ue_count * args.lambda_pps * 1500 * 8 / 1e6,
+        "offered_load_mbps": udp_offered_load_mbps(scenario, args.lambda_pps),
         "traffic_stop_s": args.sim_time, "drain_time_s": args.drain_time,
         "total_stop_s": args.sim_time + args.drain_time,
         "flow_max_per_hop_delay_s": args.flow_max_per_hop_delay,
@@ -411,7 +432,8 @@ def run_one(args: argparse.Namespace, scenario: Scenario, scheduler: str,
         if int(match.group(3)) != rng_run:
             raise RuntimeError("rng_run divergente na linha [RESULT]")
         metrics = validate_corrected_outputs(
-            ue, window, rng_run, scenario.ue_count, scenario.radius_m)
+            ue, window, rng_run, scenario.ue_count, scenario.radius_m,
+            scenario.application_mode)
         if abs(float(match.group(1)) - metrics["app_throughput_traffic_mbps"]) > 1e-3:
             raise RuntimeError("throughput da linha [RESULT] diverge do ue_summary")
         if abs(float(match.group(2)) - metrics["app_jain_traffic"]) > 1e-5:
@@ -528,6 +550,10 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--workers", type=int, default=2)
     parser.add_argument("--ue-count", type=int, default=50)
     parser.add_argument("--radius-m", type=int, default=500)
+    parser.add_argument(
+        "--application-modes", default="udp,http,mixed",
+        help="Lista separada por vírgulas: udp,http,mixed (padrão: todos)."
+    )
     parser.add_argument("--bandwidth", type=int, default=100_000_000)
     parser.add_argument("--central-frequency", type=float, default=4e9)
     parser.add_argument("--tx-power-dbm", type=float, default=43.0)
@@ -561,6 +587,9 @@ def parse_args() -> argparse.Namespace:
     )
     args = parser.parse_args()
     apply_smoke_defaults(args)
+    args.application_modes = tuple(
+        mode.strip().lower() for mode in args.application_modes.split(",")
+        if mode.strip())
     args.output = args.output.resolve()
     args.sim_binary = resolve_binary(args.sim_binary)
     if (args.workers < 1 or args.ue_count < 2 or args.radius_m <= 10
@@ -568,6 +597,8 @@ def parse_args() -> argparse.Namespace:
             or args.sim_time <= 0.4 or args.drain_time < 0
             or args.flow_max_per_hop_delay <= args.sim_time + args.drain_time
             or args.central_frequency <= 0 or args.numerology not in (0, 1, 2, 3, 4)
+            or not args.application_modes
+            or not set(args.application_modes).issubset({"udp", "http", "mixed"})
             or not 1 <= args.min_runs <= args.max_runs):
         parser.error("parâmetros físicos/estatísticos inválidos")
     return args
@@ -577,7 +608,7 @@ def main() -> int:
     args = parse_args()
     args.output.mkdir(parents=True, exist_ok=True)
     ledger = args.output / "executions.csv"
-    for scenario in scenarios(args.ue_count, args.radius_m):
+    for scenario in scenarios(args.ue_count, args.radius_m, args.application_modes):
         while True:
             rows = read_rows(ledger)
             if converged(rows, scenario, args):

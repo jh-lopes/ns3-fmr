@@ -17,11 +17,12 @@ SPEC.loader.exec_module(MODULE)
 
 class BateriaTest4Tests(unittest.TestCase):
     def write_fixture(self, root: Path, *, flow_delta=0, duplicate=0,
-                      radius=100.0, broken_window=False):
+                      radius=100.0, broken_window=False,
+                      application_mode="udp"):
         ue = root / "ue_summary.csv"
         window = root / "window_log.csv"
         ue_fields = (
-            "rng_run", "ue_id", "x_initial_m", "y_initial_m", "z_initial_m",
+            "rng_run", "application_mode", "ue_id", "x_initial_m", "y_initial_m", "z_initial_m",
             "distance_gnb_m", "app_throughput_traffic_mbps",
             "app_goodput_total_mbps", "app_jain_traffic", "app_jain_total",
             "flowmon_throughput_mbps", "flowmon_jain", "app_rx_packets_total",
@@ -36,7 +37,8 @@ class BateriaTest4Tests(unittest.TestCase):
             writer.writeheader()
             for ue_id, x in enumerate((20.0, radius)):
                 writer.writerow({
-                    "rng_run": 1, "ue_id": ue_id, "x_initial_m": x,
+                    "rng_run": 1, "application_mode": application_mode,
+                    "ue_id": ue_id, "x_initial_m": x,
                     "y_initial_m": 0, "z_initial_m": 1.5,
                     "distance_gnb_m": math.sqrt(x*x + 23.5**2),
                     "app_throughput_traffic_mbps": 1.0,
@@ -85,6 +87,14 @@ class BateriaTest4Tests(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError, "UdpServer/FlowMonitor"):
                 MODULE.validate_corrected_outputs(ue, window, 1, 2, 100)
 
+    def test_http_does_not_compare_rx_events_with_ip_packets(self):
+        with tempfile.TemporaryDirectory() as directory:
+            ue, window = self.write_fixture(
+                Path(directory), flow_delta=-10, application_mode="http")
+            metrics = MODULE.validate_corrected_outputs(
+                ue, window, 1, 2, 100, "http")
+            self.assertEqual(metrics["app_flowmon_packet_delta"], 20)
+
     def test_duplicate_application_packets_are_rejected(self):
         with tempfile.TemporaryDirectory() as directory:
             ue, window = self.write_fixture(Path(directory), duplicate=1)
@@ -117,6 +127,12 @@ class BateriaTest4Tests(unittest.TestCase):
             "flowmon_rx_packets_total", "app_flowmon_packet_delta",
         }
         self.assertTrue(expected.issubset(MODULE.FIELDS))
+
+    def test_scenarios_cover_udp_http_and_mixed(self):
+        scenarios = MODULE.scenarios(50, 500, ("udp", "http", "mixed"))
+        self.assertEqual([item.application_mode for item in scenarios],
+                         ["udp", "http", "mixed"])
+        self.assertEqual(len({item.name for item in scenarios}), 3)
 
 
 if __name__ == "__main__":

@@ -89,6 +89,7 @@ main(int argc, char* argv[])
     // --- Cenário ---
     std::string schedulerMode  = "rr";
     std::string trafficProfile = "embb";
+    std::string applicationMode = "udp";
     uint16_t    ueNumPergNb    = 9;
     uint16_t    gNbNum         = 1;
 
@@ -204,6 +205,9 @@ main(int argc, char* argv[])
     cmd.AddValue("trafficProfile",
                  "Perfil de tráfego: embb | urllc | mmtc",
                  trafficProfile);
+    cmd.AddValue("applicationMode",
+                 "Aplicação: udp | http | mixed (UEs pares UDP, ímpares HTTP)",
+                 applicationMode);
     cmd.AddValue("ueNumPergNb",
                  "Número de UEs por gNB (9 para Bateria 1, 30 para mMTC)",
                  ueNumPergNb);
@@ -304,6 +308,10 @@ main(int argc, char* argv[])
                  windowSizeMs);
 
     cmd.Parse(argc, argv);
+
+    NS_ABORT_MSG_IF(applicationMode != "udp" && applicationMode != "http" &&
+                        applicationMode != "mixed",
+                    "applicationMode inválido. Use udp | http | mixed");
 
     NS_ABORT_MSG_IF(simTime <= udpAppStartTime,
                     "simTime deve ser maior que o início das aplicações");
@@ -854,7 +862,7 @@ main(int argc, char* argv[])
         NS_LOG_INFO("PDCP Discard Timer ativo: " << perfil.discardTimerMs << "ms");
     }
 
-    // --- 5.2 Instalar aplicações UDP ---
+    // --- 5.2 Instalar aplicações UDP e/ou HTTP 3GPP ---
     ApplicationContainer serverApps;
     ApplicationContainer clientApps;
 
@@ -863,45 +871,53 @@ main(int argc, char* argv[])
     uint16_t portBase = 1234;
     std::vector<Ptr<UdpServer>> udpServers;
 
+    if (applicationMode == "http" || applicationMode == "mixed")
+    {
+        ThreeGppHttpServerHelper httpServer(remoteHostIpv4Address);
+        serverApps.Add(httpServer.Install(remoteHost));
+    }
+
     for (uint32_t ueIdx = 0; ueIdx < ueNodes.GetN(); ++ueIdx)
     {
-        for (uint32_t flowIdx = 0; flowIdx < perfil.flowsPorUe; ++flowIdx)
+        const bool useUdp = applicationMode == "udp" ||
+                            (applicationMode == "mixed" && ueIdx % 2 == 0);
+        const bool useHttp = applicationMode == "http" ||
+                             (applicationMode == "mixed" && ueIdx % 2 == 1);
+
+        if (useUdp)
         {
-            uint16_t port = portBase
-                + static_cast<uint16_t>(ueIdx * perfil.flowsPorUe + flowIdx);
+            for (uint32_t flowIdx = 0; flowIdx < perfil.flowsPorUe; ++flowIdx)
+            {
+                uint16_t port = portBase + static_cast<uint16_t>(
+                    ueIdx * perfil.flowsPorUe + flowIdx);
+                UdpServerHelper serverHelper(port);
+                ApplicationContainer serverApp = serverHelper.Install(ueNodes.Get(ueIdx));
+                serverApps.Add(serverApp);
+                Ptr<UdpServer> servidorUe = DynamicCast<UdpServer>(serverApp.Get(0));
+                udpServers.push_back(servidorUe);
+                servidorUe->TraceConnectWithoutContext(
+                    "Rx", MakeBoundCallback(&RxWindowCallback, ueIdx, flowIdx));
 
-            UdpServerHelper serverHelper(port);
-            ApplicationContainer serverApp =
-                serverHelper.Install(ueNodes.Get(ueIdx));
-            serverApps.Add(serverApp);
-            Ptr<UdpServer> servidorUe =
-                DynamicCast<UdpServer>(serverApp.Get(0));
-            udpServers.push_back(servidorUe);
-
-            // Bloco 6B: conecta o trace "Rx" deste servidor ao
-            // acumulador de bytes por UE. MakeBoundCallback fixa
-            // ueIdx como primeiro argumento — funciona para
-            // qualquer schedulerMode, pois observa o que chegou
-            // na camada de aplicação, não o scheduler em si.
-            // Quando flowsPorUe > 1, os bytes de todos os flows
-            // do mesmo UE se somam no mesmo índice do vetor.
-            servidorUe->TraceConnectWithoutContext(
-                "Rx", MakeBoundCallback(&RxWindowCallback, ueIdx, flowIdx));
-
-            UdpClientHelper clientHelper(ueIpIface.GetAddress(ueIdx), port);
-            clientHelper.SetAttribute(
-                "Interval",
-                TimeValue(Seconds(1.0 / static_cast<double>(perfil.lambda))));
-            clientHelper.SetAttribute(
-                "PacketSize", UintegerValue(perfil.pacoteBytes));
-            clientHelper.SetAttribute(
-                "MaxPackets", UintegerValue(0xFFFFFFFF));
-            clientApps.Add(clientHelper.Install(remoteHost));
-
-            NrEpsBearer bearer(perfil.bearerQci);
-            nrHelper->ActivateDedicatedEpsBearer(
-                ueDevs.Get(ueIdx), bearer, NrEpcTft::Default());
+                UdpClientHelper clientHelper(ueIpIface.GetAddress(ueIdx), port);
+                clientHelper.SetAttribute("Interval", TimeValue(Seconds(
+                    1.0 / static_cast<double>(perfil.lambda))));
+                clientHelper.SetAttribute("PacketSize", UintegerValue(perfil.pacoteBytes));
+                clientHelper.SetAttribute("MaxPackets", UintegerValue(0xFFFFFFFF));
+                clientApps.Add(clientHelper.Install(remoteHost));
+            }
         }
+        if (useHttp)
+        {
+            ThreeGppHttpClientHelper httpClient(remoteHostIpv4Address);
+            ApplicationContainer httpApp = httpClient.Install(ueNodes.Get(ueIdx));
+            httpApp.Get(0)->TraceConnectWithoutContext(
+                "Rx", MakeBoundCallback(&RxHttpCallback, ueIdx));
+            clientApps.Add(httpApp);
+        }
+
+        NrEpsBearer bearer(perfil.bearerQci);
+        nrHelper->ActivateDedicatedEpsBearer(
+            ueDevs.Get(ueIdx), bearer, NrEpcTft::Default());
     }
 
     // --- 5.3 Configurar tempos ---
@@ -911,7 +927,7 @@ main(int argc, char* argv[])
     serverApps.Stop(totalStopTime);
     clientApps.Stop(simTime);
 
-    NS_LOG_INFO("Aplicações UDP instaladas:"
+    NS_LOG_INFO("Aplicações instaladas: mode=" << applicationMode
              << " UEs=" << ueNodes.GetN()
              << " flows/UE=" << perfil.flowsPorUe
              << " total_flows=" << ueNodes.GetN() * perfil.flowsPorUe
@@ -1080,7 +1096,7 @@ main(int argc, char* argv[])
     if (enableFlowSummaryCsv)
     {
         flowCsv.open(flowSummaryCsvPath);
-        flowCsv << "scheduler,traffic_profile,num_ues,seed,rng_run,"
+        flowCsv << "scheduler,traffic_profile,application_mode,num_ues,seed,rng_run,"
                 << "bandwidth_mhz,flow_id,ue_id,"
                 << "flowmon_throughput_mbps,flowmon_delay_mean_ms,"
                 << "flowmon_delay_p99_ms,flowmon_jitter_mean_ms,"
@@ -1100,12 +1116,25 @@ main(int argc, char* argv[])
             classifier->FindFlow(flowId);
 
         uint16_t destPort = tuple.destinationPort;
-        uint32_t ueIdx = (destPort - portBase) / perfil.flowsPorUe;
-
-        // Ignora fluxos de controle do EPC (ARP, DHCP, sinalização)
-        if (destPort < portBase ||
-            destPort >= portBase +
+        uint32_t ueIdx = ueNodes.GetN();
+        if (destPort >= portBase && destPort < portBase +
                 static_cast<uint16_t>(ueNumPergNb * perfil.flowsPorUe))
+        {
+            ueIdx = (destPort - portBase) / perfil.flowsPorUe;
+        }
+        else
+        {
+            for (uint32_t i = 0; i < ueIpIface.GetN(); ++i)
+            {
+                if (tuple.destinationAddress == ueIpIface.GetAddress(i))
+                {
+                    ueIdx = i;
+                    break;
+                }
+            }
+        }
+        // Ignora ACKs/requisições HTTP no uplink e fluxos de controle.
+        if (ueIdx >= ueNodes.GetN())
         {
             continue;
         }
@@ -1194,6 +1223,7 @@ main(int argc, char* argv[])
         {
             flowCsv << schedulerMode << ","
                     << trafficProfile << ","
+                    << applicationMode << ","
                     << ueNumPergNb << ","
                     << seed << ","
                     << run << ","
@@ -1260,7 +1290,7 @@ main(int argc, char* argv[])
         // com o log nativo do 5G-LENA slot_log_common.csv (RBG por UE por
         // slot, indexado por RNTI — ver --EnableCommonSlotCsv), sem repetir
         // o erro de assumir rnti = ueIdx + 1. Ver computar_rbg_por_ue.py.
-        ueCsv << "scheduler,traffic_profile,num_ues,seed,rng_run,bandwidth_mhz,"
+        ueCsv << "scheduler,traffic_profile,application_mode,num_ues,seed,rng_run,bandwidth_mhz,"
               << "position_mode,mobility_enabled,mobility_bounds_m,"
               << "ue_id,rnti,x_initial_m,y_initial_m,z_initial_m,"
               << "app_throughput_traffic_mbps,app_goodput_total_mbps,"
@@ -1351,6 +1381,7 @@ main(int argc, char* argv[])
 
             ueCsv << schedulerMode << ","
                   << trafficProfile << ","
+                  << applicationMode << ","
                   << ueNumPergNb << ","
                   << seed << ","
                   << run << ","
@@ -1430,6 +1461,7 @@ main(int argc, char* argv[])
     std::cout << std::fixed << std::setprecision(2);
     std::cout << "Scheduler           : " << schedulerMode << std::endl;
     std::cout << "Perfil de tráfego   : " << trafficProfile << std::endl;
+    std::cout << "Aplicação           : " << applicationMode << std::endl;
     std::cout << "Descrição           : " << perfil.descricao << std::endl;
     std::cout << "UEs                 : " << ueNumPergNb << std::endl;
     std::cout << "Seed                : " << seed << std::endl;
@@ -1468,6 +1500,7 @@ main(int argc, char* argv[])
     NS_LOG_UNCOND("[RESULT]"
                << " scheduler=" << schedulerMode
                << " perfil=" << trafficProfile
+               << " application_mode=" << applicationMode
                << " throughput_mbps=" << appTrafficThroughputAgregado
                << " jain_vazao=" << appTrafficJain
                << " app_total_goodput_mbps=" << appTotalGoodputAgregado
