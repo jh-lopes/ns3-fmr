@@ -20,6 +20,9 @@ resultados de aplicações diferentes não são tratados como replicações.
 - janelas completas, incluindo a última janela parcial e a fase `drain`;
 - `metadata.json`, hash do binário, commit Git e comando integral por execução;
 - nomes explícitos para métricas de aplicação e FlowMonitor.
+- CQI, MCS e rank médios a partir de `CqiFeedbackTrace`;
+- RSRP e RSRQ médios da célula servidora via `ReportUeMeasurements`, sempre
+  acompanhados das respectivas contagens de amostras.
 
 ## Semântica temporal
 
@@ -110,6 +113,11 @@ Para entrega eventual após o drain, use:
 
 As colunas `flowmon_*` são mantidas como instrumento de reconciliação e não
 como fonte principal da análise.
+
+Valores de rádio ausentes são exportados como `nan`, nunca como zero. As
+colunas `cqi_samples` e `measurement_samples` permitem distinguir ausência de
+trace de uma medição física igual a zero; o ledger informa quantos UEs tiveram
+cada família de medida.
 
 No modo HTTP, o trace `Rx` do cliente 3GPP representa fragmentos entregues à
 aplicação TCP, não datagramas com `SeqTsHeader`. Por isso, atraso/PDR de

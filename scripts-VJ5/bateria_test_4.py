@@ -36,6 +36,8 @@ FIELDS = (
     "traffic_window_jain_mean", "drain_window_throughput_mean_mbps",
     "app_rx_packets_total", "flowmon_rx_packets_total",
     "app_flowmon_packet_delta", "position_hash", "metadata_sha256",
+    "ues_with_cqi", "ues_with_measurements", "cqi_mean", "mcs_mean",
+    "rank_mean", "rsrp_mean_dbm", "rsrq_mean_db",
     "status", "elapsed_s", "output_dir", "error",
 )
 
@@ -251,6 +253,8 @@ def validate_corrected_outputs(ue_path: Path, window_path: Path,
         "app_goodput_total_mbps", "app_jain_traffic", "app_jain_total",
         "flowmon_throughput_mbps", "flowmon_jain", "app_rx_packets_total",
         "flowmon_rx_packets", "app_duplicate_packets", "app_malformed_packets",
+        "cqi_mean", "cqi_samples", "mcs_mean", "rank_mean",
+        "rsrp_mean_dbm", "rsrq_mean_db", "measurement_samples",
         "app_throughput_traffic_aggregate_mbps",
         "app_goodput_total_aggregate_mbps",
         "flowmon_throughput_aggregate_mbps",
@@ -309,6 +313,11 @@ def validate_corrected_outputs(ue_path: Path, window_path: Path,
         raise RuntimeError(
             f"UdpServer/FlowMonitor divergem: app={app_rx}, flowmon={flow_rx}")
 
+    cqi_rows = [row for row in ue_rows if int(row["cqi_samples"]) > 0]
+    measurement_rows = [row for row in ue_rows
+                        if int(row["measurement_samples"]) > 0]
+    mean_or_nan = lambda rows, column: (
+        fmean(float(row[column]) for row in rows) if rows else math.nan)
     return {
         "app_throughput_traffic_mbps": float(ue_rows[0]["app_throughput_traffic_aggregate_mbps"]),
         "app_goodput_total_mbps": float(ue_rows[0]["app_goodput_total_aggregate_mbps"]),
@@ -319,6 +328,13 @@ def validate_corrected_outputs(ue_path: Path, window_path: Path,
         "app_rx_packets_total": app_rx,
         "flowmon_rx_packets_total": flow_rx,
         "app_flowmon_packet_delta": app_rx - flow_rx,
+        "ues_with_cqi": len(cqi_rows),
+        "ues_with_measurements": len(measurement_rows),
+        "cqi_mean": mean_or_nan(cqi_rows, "cqi_mean"),
+        "mcs_mean": mean_or_nan(cqi_rows, "mcs_mean"),
+        "rank_mean": mean_or_nan(cqi_rows, "rank_mean"),
+        "rsrp_mean_dbm": mean_or_nan(measurement_rows, "rsrp_mean_dbm"),
+        "rsrq_mean_db": mean_or_nan(measurement_rows, "rsrq_mean_db"),
     }
 
 
@@ -422,6 +438,9 @@ def run_one(args: argparse.Namespace, scenario: Scenario, scheduler: str,
         "app_rx_packets_total": "", "flowmon_rx_packets_total": "",
         "app_flowmon_packet_delta": "", "position_hash": "",
         "metadata_sha256": sha256_file(metadata_path), "status": "ERROR",
+        "ues_with_cqi": "", "ues_with_measurements": "", "cqi_mean": "",
+        "mcs_mean": "", "rank_mean": "", "rsrp_mean_dbm": "",
+        "rsrq_mean_db": "",
         "elapsed_s": f"{elapsed:.3f}", "output_dir": output.relative_to(ROOT),
         "error": "",
     }

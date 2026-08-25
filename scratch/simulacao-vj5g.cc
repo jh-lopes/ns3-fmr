@@ -965,9 +965,14 @@ main(int argc, char* argv[])
         Ptr<NrUePhy> uePhy = nrHelper->GetUePhy(ueDevs.Get(i), 0);
         uePhy->TraceConnectWithoutContext(
             "DlDataSinr", MakeBoundCallback(&SinrCallback, i));
+        uePhy->TraceConnectWithoutContext(
+            "CqiFeedbackTrace", MakeBoundCallback(&CqiFeedbackCallback, i));
+        uePhy->TraceConnectWithoutContext(
+            "ReportUeMeasurements",
+            MakeBoundCallback(&UeMeasurementsCallback, i));
     }
 
-    NS_LOG_INFO("Trace DlDataSinr conectado diretamente em "
+    NS_LOG_INFO("Traces DlDataSinr/CqiFeedbackTrace/ReportUeMeasurements conectados em "
              << ueDevs.GetN() << " UEs via GetUePhy (ueIdx amarrado por UE)");
 
     // --- 6.2 Coletar distâncias UE-gNB ---
@@ -1303,7 +1308,9 @@ main(int argc, char* argv[])
               << "flowmon_throughput_mbps,flowmon_delay_mean_ms,"
               << "flowmon_delay_p99_ms,flowmon_pdr_pct,"
               << "flowmon_undelivered_at_stop_packets,flowmon_tx_packets,"
-              << "flowmon_rx_packets,sinr_mean_db,sinr_samples,distance_gnb_m,"
+              << "flowmon_rx_packets,sinr_mean_db,sinr_samples,"
+              << "cqi_mean,cqi_samples,mcs_mean,rank_mean,"
+              << "rsrp_mean_dbm,rsrq_mean_db,measurement_samples,distance_gnb_m,"
               << "app_jain_traffic,app_jain_total,flowmon_jain,"
               << "app_throughput_traffic_aggregate_mbps,"
               << "app_goodput_total_aggregate_mbps,"
@@ -1350,6 +1357,23 @@ main(int argc, char* argv[])
         {
             sinrDb = sinrIt->second.first / sinrIt->second.second;
         }
+
+        const auto radioIt = g_radioAcumulado.find(i);
+        const bool hasCqi = radioIt != g_radioAcumulado.end() &&
+                            radioIt->second.cqiAmostras > 0;
+        const bool hasMeasurements = radioIt != g_radioAcumulado.end() &&
+                                     radioIt->second.medidasAmostras > 0;
+        const double missingRadio = std::numeric_limits<double>::quiet_NaN();
+        const double cqiMean = hasCqi
+            ? radioIt->second.cqiSoma / radioIt->second.cqiAmostras : missingRadio;
+        const double mcsMean = hasCqi
+            ? radioIt->second.mcsSoma / radioIt->second.cqiAmostras : missingRadio;
+        const double rankMean = hasCqi
+            ? radioIt->second.rankSoma / radioIt->second.cqiAmostras : missingRadio;
+        const double rsrpMeanDbm = hasMeasurements
+            ? radioIt->second.rsrpSomaDbm / radioIt->second.medidasAmostras : missingRadio;
+        const double rsrqMeanDb = hasMeasurements
+            ? radioIt->second.rsrqSomaDb / radioIt->second.medidasAmostras : missingRadio;
 
         double distM = i < distanciasUe.size() ? distanciasUe[i] : 0.0;
 
@@ -1416,6 +1440,13 @@ main(int argc, char* argv[])
                   << r.rxPackets << ","
                   << sinrDb << ","
                   << (sinrIt != g_sinrAcumulado.end() ? sinrIt->second.second : 0) << ","
+                  << cqiMean << ","
+                  << (hasCqi ? radioIt->second.cqiAmostras : 0) << ","
+                  << mcsMean << ","
+                  << rankMean << ","
+                  << rsrpMeanDbm << ","
+                  << rsrqMeanDb << ","
+                  << (hasMeasurements ? radioIt->second.medidasAmostras : 0) << ","
                   << distM << ","
                   << appTrafficJain << ","
                   << appTotalJain << ","

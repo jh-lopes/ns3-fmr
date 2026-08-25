@@ -18,7 +18,7 @@ SPEC.loader.exec_module(MODULE)
 class BateriaTest4Tests(unittest.TestCase):
     def write_fixture(self, root: Path, *, flow_delta=0, duplicate=0,
                       radius=100.0, broken_window=False,
-                      application_mode="udp"):
+                      application_mode="udp", radio_samples=True):
         ue = root / "ue_summary.csv"
         window = root / "window_log.csv"
         ue_fields = (
@@ -28,6 +28,8 @@ class BateriaTest4Tests(unittest.TestCase):
             "flowmon_throughput_mbps", "flowmon_jain", "app_rx_packets_total",
             "flowmon_rx_packets", "app_duplicate_packets",
             "app_malformed_packets",
+            "cqi_mean", "cqi_samples", "mcs_mean", "rank_mean",
+            "rsrp_mean_dbm", "rsrq_mean_db", "measurement_samples",
             "app_throughput_traffic_aggregate_mbps",
             "app_goodput_total_aggregate_mbps",
             "flowmon_throughput_aggregate_mbps",
@@ -49,6 +51,13 @@ class BateriaTest4Tests(unittest.TestCase):
                     "flowmon_rx_packets": 100 + flow_delta,
                     "app_duplicate_packets": duplicate,
                     "app_malformed_packets": 0,
+                    "cqi_mean": 10 if radio_samples else "nan",
+                    "cqi_samples": 20 if radio_samples else 0,
+                    "mcs_mean": 12 if radio_samples else "nan",
+                    "rank_mean": 1 if radio_samples else "nan",
+                    "rsrp_mean_dbm": -85 if radio_samples else "nan",
+                    "rsrq_mean_db": -10 if radio_samples else "nan",
+                    "measurement_samples": 15 if radio_samples else 0,
                     "app_throughput_traffic_aggregate_mbps": 2.0,
                     "app_goodput_total_aggregate_mbps": 2.4,
                     "flowmon_throughput_aggregate_mbps": 2.46,
@@ -80,6 +89,8 @@ class BateriaTest4Tests(unittest.TestCase):
             metrics = MODULE.validate_corrected_outputs(ue, window, 1, 2, 100)
             self.assertEqual(metrics["app_flowmon_packet_delta"], 0)
             self.assertEqual(metrics["app_throughput_traffic_mbps"], 2.0)
+            self.assertEqual(metrics["ues_with_cqi"], 2)
+            self.assertEqual(metrics["ues_with_measurements"], 2)
 
     def test_flowmonitor_application_divergence_is_rejected(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -94,6 +105,15 @@ class BateriaTest4Tests(unittest.TestCase):
             metrics = MODULE.validate_corrected_outputs(
                 ue, window, 1, 2, 100, "http")
             self.assertEqual(metrics["app_flowmon_packet_delta"], 20)
+
+    def test_missing_radio_traces_are_counted_not_replaced_by_zero(self):
+        with tempfile.TemporaryDirectory() as directory:
+            ue, window = self.write_fixture(Path(directory), radio_samples=False)
+            metrics = MODULE.validate_corrected_outputs(ue, window, 1, 2, 100)
+            self.assertEqual(metrics["ues_with_cqi"], 0)
+            self.assertEqual(metrics["ues_with_measurements"], 0)
+            self.assertTrue(math.isnan(metrics["cqi_mean"]))
+            self.assertTrue(math.isnan(metrics["rsrp_mean_dbm"]))
 
     def test_duplicate_application_packets_are_rejected(self):
         with tempfile.TemporaryDirectory() as directory:

@@ -29,6 +29,7 @@
 #include <algorithm>
 #include <cmath>
 #include <fstream>
+#include <limits>
 #include <map>
 #include <set>
 #include <string>
@@ -189,6 +190,21 @@ inline std::map<uint32_t, std::pair<double, uint32_t>> g_sinrAcumulado;
 // assumir rnti = ueIdx + 1.
 inline std::map<uint32_t, uint16_t> g_ueIdxParaRnti;
 
+// Indicadores de canal reportados pela PHY. As contagens permanecem
+// separadas porque CQI/MCS/RI e RSRP/RSRQ têm periodicidades distintas.
+struct AcumuladorRadioUe
+{
+    double cqiSoma = 0.0;
+    double mcsSoma = 0.0;
+    double rankSoma = 0.0;
+    uint64_t cqiAmostras = 0;
+    double rsrpSomaDbm = 0.0;
+    double rsrqSomaDb = 0.0;
+    uint64_t medidasAmostras = 0;
+};
+
+inline std::map<uint32_t, AcumuladorRadioUe> g_radioAcumulado;
+
 // Ponto de início da simulação em tempo real (wall-clock).
 // Preenchido em main() antes do Simulator::Run().
 // Usado pela barra de progresso para mostrar tempo real decorrido.
@@ -303,6 +319,41 @@ SinrCallback(uint32_t ueIdx,
     // Registra a correspondência ueIdx → RNTI real (idempotente — o RNTI
     // de um UE não muda durante a simulação, sobrescrever com o mesmo
     // valor a cada amostra não tem custo relevante).
+    g_ueIdxParaRnti[ueIdx] = rnti;
+}
+
+inline void
+CqiFeedbackCallback(uint32_t ueIdx,
+                    uint16_t rnti,
+                    uint8_t cqi,
+                    uint8_t mcs,
+                    uint8_t rank)
+{
+    auto& acumulador = g_radioAcumulado[ueIdx];
+    acumulador.cqiSoma += static_cast<double>(cqi);
+    acumulador.mcsSoma += static_cast<double>(mcs);
+    acumulador.rankSoma += static_cast<double>(rank);
+    ++acumulador.cqiAmostras;
+    g_ueIdxParaRnti[ueIdx] = rnti;
+}
+
+inline void
+UeMeasurementsCallback(uint32_t ueIdx,
+                       uint16_t rnti,
+                       uint16_t cellId,
+                       double rsrp,
+                       double rsrq,
+                       bool isServingCell,
+                       uint8_t componentCarrierId)
+{
+    if (!isServingCell)
+    {
+        return;
+    }
+    auto& acumulador = g_radioAcumulado[ueIdx];
+    acumulador.rsrpSomaDbm += rsrp;
+    acumulador.rsrqSomaDb += rsrq;
+    ++acumulador.medidasAmostras;
     g_ueIdxParaRnti[ueIdx] = rnti;
 }
 
