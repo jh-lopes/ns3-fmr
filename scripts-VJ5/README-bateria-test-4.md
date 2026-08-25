@@ -43,6 +43,25 @@ git pull --ff-only origin feat/vj5g-analysis-engine
 ./ns3 build
 ```
 
+Para evitar confundir fonte atualizada com binário antigo, o executável novo
+contém e imprime um marcador de capacidades. Valide o arquivo exato que será
+executado:
+
+```bash
+BIN="$PWD/build/scratch/ns3.46-simulacao-vj5g-default"
+strings "$BIN" | rg "drain_zero,http_rx_address,classic_decimal"
+```
+
+Se o comando não produzir saída, remova especificamente o binário antigo e
+recompile. Executar novamente o mesmo arquivo sem rebuild sempre repetirá o
+erro antigo, independentemente de a fonte já estar corrigida:
+
+```bash
+rm -f "$BIN"
+./ns3 build
+strings "$BIN" | rg "drain_zero,http_rx_address,classic_decimal"
+```
+
 Os CSVs usam explicitamente o locale clássico: métricas reais são gravadas
 com ponto decimal, mesmo quando o servidor está configurado para `pt_BR`.
 Contagens (`num_ues`, pacotes, amostras, IDs etc.) continuam inteiras de

@@ -333,6 +333,11 @@ main(int argc, char* argv[])
 
     cmd.Parse(argc, argv);
 
+    // Marcador pesquisável com `strings` para distinguir este executável de
+    // builds antigos que rejeitavam drainTime=0 e tinham callback HTTP incorreto.
+    NS_LOG_UNCOND("[VJ5G] build_capabilities="
+                  "drain_zero,http_rx_address,classic_decimal");
+
     NS_ABORT_MSG_IF(applicationMode != "udp" && applicationMode != "http" &&
                         applicationMode != "mixed",
                     "applicationMode inválido. Use udp | http | mixed");
