@@ -33,6 +33,21 @@ adicional de drenagem. Valores negativos são rejeitados. Informar apenas
 `--FlowSummaryCsvPath` não ativa a coleta; para gerar esse arquivo numa
 execução manual, use também `--EnableFlowSummaryCsv=true`.
 
+Se a mensagem de erro ainda mostrar `drainTime.IsNegative()` em vez de
+`drainTime.IsStrictlyNegative()`, o executável está desatualizado. Confirme e
+recompile antes do teste:
+
+```bash
+rg -n "drainTime.IsStrictlyNegative" scratch/simulacao-vj5g.cc
+git pull --ff-only origin feat/vj5g-analysis-engine
+./ns3 build
+```
+
+Os CSVs usam explicitamente o locale clássico: métricas reais são gravadas
+com ponto decimal, mesmo quando o servidor está configurado para `pt_BR`.
+Contagens (`num_ues`, pacotes, amostras, IDs etc.) continuam inteiras de
+propósito e, portanto, não recebem casas decimais.
+
 Por padrão:
 
 - aplicações começam em `0,4 s`;

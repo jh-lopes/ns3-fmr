@@ -83,6 +83,11 @@ NS_LOG_COMPONENT_DEFINE("SimulacaoVJ5G");
 int
 main(int argc, char* argv[])
 {
+    // Mantém o ponto como separador decimal independentemente do locale do
+    // servidor. Isso é essencial porque vírgula também é o delimitador CSV.
+    std::locale::global(std::locale::classic());
+    std::cout.imbue(std::locale::classic());
+    std::cerr.imbue(std::locale::classic());
     // --------------------------------------------------------
     // BLOCO 1: PARÂMETROS DE ENTRADA
     // --------------------------------------------------------
@@ -1090,6 +1095,10 @@ main(int argc, char* argv[])
     if (enableWindowCsv)
     {
         g_windowCsv.open(windowCsvPath);
+        NS_ABORT_MSG_IF(!g_windowCsv.is_open(),
+                        "Não foi possível abrir WindowCsvPath: " << windowCsvPath);
+        g_windowCsv.imbue(std::locale::classic());
+        g_windowCsv << std::fixed << std::setprecision(6);
         g_windowCsv << "scheduler,traffic_profile,num_ues,flows_per_ue,seed,rng_run,"
                     << "bandwidth_mhz,window_id,start_time_s,end_time_s,"
                     << "duration_s,phase,aggregate_thr_mbps,jain_throughput,"
@@ -1148,6 +1157,11 @@ main(int argc, char* argv[])
     if (enableFlowSummaryCsv)
     {
         flowCsv.open(flowSummaryCsvPath);
+        NS_ABORT_MSG_IF(!flowCsv.is_open(),
+                        "Não foi possível abrir FlowSummaryCsvPath: "
+                            << flowSummaryCsvPath);
+        flowCsv.imbue(std::locale::classic());
+        flowCsv << std::fixed << std::setprecision(6);
         flowCsv << "scheduler,traffic_profile,application_mode,num_ues,flows_per_ue,seed,rng_run,"
                 << "bandwidth_mhz,flow_id,ue_id,flow_index,"
                 << "flowmon_throughput_mbps,flowmon_delay_mean_ms,"
@@ -1345,6 +1359,9 @@ main(int argc, char* argv[])
     if (enableUeSummaryCsv)
     {
         ueCsv.open(ueSummaryCsvPath);
+        NS_ABORT_MSG_IF(!ueCsv.is_open(),
+                        "Não foi possível abrir UeSummaryCsvPath: "
+                            << ueSummaryCsvPath);
         ueCsv.imbue(std::locale::classic());
         ueCsv << std::fixed << std::setprecision(6);
         // Coluna "rnti" adicionada em 12/ago/2026: permite cruzar este CSV
