@@ -391,6 +391,38 @@ def validate_corrected_outputs(ue_path: Path, window_path: Path,
     }
 
 
+def validate_flow_summary(path: Path, expected_ues: int,
+                          expected_flows_per_ue: int,
+                          application_mode: str) -> None:
+    """Confirma que cada fluxo UDP configurado apareceu uma única vez no CSV."""
+    rows = read_csv_required(path, {
+        "application_mode", "flows_per_ue", "ue_id", "flow_index", "flow_id",
+        "flowmon_tx_packets", "flowmon_rx_packets",
+    })
+    if any(row["application_mode"] != application_mode for row in rows):
+        raise RuntimeError("application_mode divergente no flow_summary")
+    if any(int(row["flows_per_ue"]) != expected_flows_per_ue for row in rows):
+        raise RuntimeError("flows_per_ue divergente no flow_summary")
+
+    expected_udp_ues = (set(range(expected_ues)) if application_mode == "udp"
+                        else set(range(0, expected_ues, 2))
+                        if application_mode == "mixed" else set())
+    observed: dict[int, set[int]] = {ue: set() for ue in expected_udp_ues}
+    for row in rows:
+        flow_index = int(row["flow_index"])
+        if flow_index < 0:
+            continue
+        ue_id = int(row["ue_id"])
+        if ue_id not in observed or flow_index in observed[ue_id]:
+            raise RuntimeError("fluxo UDP inesperado ou duplicado no flow_summary")
+        if not 0 <= flow_index < expected_flows_per_ue:
+            raise RuntimeError("flow_index fora do intervalo configurado")
+        observed[ue_id].add(flow_index)
+    expected_indices = set(range(expected_flows_per_ue))
+    if any(indices != expected_indices for indices in observed.values()):
+        raise RuntimeError("flow_summary não contém todos os fluxos UDP configurados")
+
+
 def position_hash(path: Path, expected_run: int) -> str:
     with path.open(newline="", encoding="utf-8") as handle:
         rows = list(csv.DictReader(handle))
@@ -526,6 +558,9 @@ def run_one(args: argparse.Namespace, scenario: Scenario, scheduler: str,
             ue, window, rng_run, scenario.ue_count, scenario.radius_m,
             scenario.flows_per_ue, scenario.application_mode, args.channel_scenario,
             args.channel_condition, args.channel_model, args.enable_shadowing)
+        validate_flow_summary(
+            flow, scenario.ue_count, scenario.flows_per_ue,
+            scenario.application_mode)
         if abs(float(match.group(1)) - metrics["app_throughput_traffic_mbps"]) > 1e-3:
             raise RuntimeError("throughput da linha [RESULT] diverge do ue_summary")
         if abs(float(match.group(2)) - metrics["app_jain_traffic"]) > 1e-5:
@@ -634,6 +669,29 @@ def apply_smoke_defaults(args: argparse.Namespace) -> None:
         args.batch_size = 1
 
 
+def apply_validation_profile(args: argparse.Namespace) -> None:
+    """Configura campanhas multifluxo pequenas, sem exigir congestionamento total."""
+    if args.validation_profile == "quick":
+        args.ue_count = 4
+        args.radius_m = 75
+        args.application_modes = "udp"
+        args.flows_per_ue = 2
+        args.lambda_pps = 250
+        args.sim_time = 2.0
+        args.drain_time = 1.0
+        args.min_runs = args.max_runs = args.batch_size = 1
+    elif args.validation_profile == "complete":
+        args.ue_count = 8
+        args.radius_m = 150
+        args.application_modes = "udp,mixed"
+        args.flows_per_ue = 3
+        args.lambda_pps = 250
+        args.sim_time = 10.0
+        args.drain_time = 3.0
+        args.min_runs = args.max_runs = 5
+        args.batch_size = 5
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--output", type=Path,
@@ -680,6 +738,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--jain-error", type=float, default=0.01)
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument(
+        "--validation-profile", choices=("quick", "complete"),
+        help=("Perfil multifluxo pronto: quick valida coletas com 4 UEs/75 m; "
+              "complete executa 5 runs pareadas com 8 UEs/150 m."),
+    )
+    parser.add_argument(
         "--smoke", action="store_true",
         help="Executa 1 run de 1 s para RR/PF/MR/QoS e valida o pareamento."
     )
@@ -692,6 +755,7 @@ def parse_args() -> argparse.Namespace:
         help="Força o painel em ambientes sem TTY, como algumas células de notebook."
     )
     args = parser.parse_args()
+    apply_validation_profile(args)
     apply_smoke_defaults(args)
     args.application_modes = tuple(
         mode.strip().lower() for mode in args.application_modes.split(",")

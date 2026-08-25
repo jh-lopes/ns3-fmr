@@ -54,6 +54,25 @@ O smoke executa uma run de 1 s de tráfego + 1 s de drain para RR, PF, MR e
 QoS nos modos UDP, HTTP e misto. Para testar apenas UDP, acrescente
 `--application-modes udp`.
 
+## Perfis de validação multifluxo
+
+Dois perfis reproduzíveis exercitam a atualização de múltiplos fluxos sem
+forçar congestionamento completo:
+
+```bash
+# Rápido: 4 UEs, raio de 75 m, 2 fluxos/UE, 1 run e 2 s de tráfego.
+python3 scripts-VJ5/bateria_test_4.py --validation-profile quick
+
+# Completo: 8 UEs, raio de 150 m, 3 fluxos/UE, UDP+misto,
+# 5 runs pareadas por scheduler e 10 s de tráfego por execução.
+python3 scripts-VJ5/bateria_test_4.py --validation-profile complete
+```
+
+O perfil rápido valida `ue_summary.csv`, `flow_summary.csv`, `window_log.csv`,
+as contagens de fluxos no FlowMonitor, pareamento da topologia, CQI/MCS,
+RSRP/RSRQ e reconciliação entre aplicação e FlowMonitor. O perfil completo
+repete essas verificações em cinco `rngRun` para RR, PF, MR e QoS.
+
 ## Campanha
 
 ### Vários fluxos por UE

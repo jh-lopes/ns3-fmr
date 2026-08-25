@@ -174,12 +174,71 @@ class BateriaTest4Tests(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError, "flows_per_ue"):
                 MODULE.validate_corrected_outputs(ue, window, 1, 2, 100, 3)
 
+    def test_flow_summary_requires_every_configured_udp_flow(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "flow_summary.csv"
+            fields = ("application_mode", "flows_per_ue", "ue_id",
+                      "flow_index", "flow_id", "flowmon_tx_packets",
+                      "flowmon_rx_packets")
+            with path.open("w", newline="", encoding="utf-8") as handle:
+                writer = csv.DictWriter(handle, fieldnames=fields)
+                writer.writeheader()
+                for ue_id in range(2):
+                    for flow_index in range(2):
+                        writer.writerow({
+                            "application_mode": "udp", "flows_per_ue": 2,
+                            "ue_id": ue_id, "flow_index": flow_index,
+                            "flow_id": ue_id * 2 + flow_index + 1,
+                            "flowmon_tx_packets": 10, "flowmon_rx_packets": 10,
+                        })
+            MODULE.validate_flow_summary(path, 2, 2, "udp")
+            with path.open(encoding="utf-8") as handle:
+                rows = list(csv.DictReader(handle))
+            with path.open("w", newline="", encoding="utf-8") as handle:
+                writer = csv.DictWriter(handle, fieldnames=fields)
+                writer.writeheader()
+                writer.writerows(rows[:-1])
+            with self.assertRaisesRegex(RuntimeError, "todos os fluxos"):
+                MODULE.validate_flow_summary(path, 2, 2, "udp")
+
     def test_smoke_sets_short_traffic_and_drain(self):
         args = Namespace(smoke=True, sim_time=30.0, drain_time=15.0,
                          min_runs=30, max_runs=100, batch_size=10)
         MODULE.apply_smoke_defaults(args)
         self.assertEqual((args.sim_time, args.drain_time), (1.0, 1.0))
         self.assertEqual((args.min_runs, args.max_runs, args.batch_size), (1, 1, 1))
+
+    def test_quick_validation_profile_reduces_ues_radius_and_load(self):
+        args = Namespace(
+            validation_profile="quick", ue_count=50, radius_m=500,
+            application_modes="udp,http,mixed", flows_per_ue=1,
+            lambda_pps=500, sim_time=30.0, drain_time=15.0,
+            min_runs=30, max_runs=100, batch_size=10,
+        )
+        MODULE.apply_validation_profile(args)
+        self.assertEqual(
+            (args.ue_count, args.radius_m, args.application_modes,
+             args.flows_per_ue, args.lambda_pps),
+            (4, 75, "udp", 2, 250),
+        )
+        self.assertEqual((args.sim_time, args.drain_time), (2.0, 1.0))
+        self.assertEqual((args.min_runs, args.max_runs), (1, 1))
+
+    def test_complete_validation_profile_is_paired_but_not_fully_loaded(self):
+        args = Namespace(
+            validation_profile="complete", ue_count=50, radius_m=500,
+            application_modes="udp,http,mixed", flows_per_ue=1,
+            lambda_pps=500, sim_time=30.0, drain_time=15.0,
+            min_runs=30, max_runs=100, batch_size=10,
+        )
+        MODULE.apply_validation_profile(args)
+        self.assertEqual(
+            (args.ue_count, args.radius_m, args.application_modes,
+             args.flows_per_ue, args.lambda_pps),
+            (8, 150, "udp,mixed", 3, 250),
+        )
+        self.assertEqual((args.sim_time, args.drain_time), (10.0, 3.0))
+        self.assertEqual((args.min_runs, args.max_runs), (5, 5))
 
     def test_ledger_contains_provenance_and_reconciliation(self):
         expected = {
