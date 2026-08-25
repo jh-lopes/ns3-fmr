@@ -74,6 +74,18 @@ hashes distintos.
 
 ## Bateria completa
 
+### Vários fluxos por UE
+
+Use `--flows-per-ue N` para instalar `N` fluxos UDP independentes em cada UE.
+`--lambda-pps` é a taxa **por fluxo**, portanto a carga oferecida é
+`UEs × fluxos/UE × lambda × tamanho_do_pacote × 8`. O número de fluxos
+faz parte do nome do cenário e do `executions.csv`, evitando misturar campanhas
+com cargas distintas.
+
+```bash
+python3 scripts-VJ5/bateria_test_3.py --flows-per-ue 2 --lambda-pps 500
+```
+
 Após validar o smoke test:
 
 ```bash

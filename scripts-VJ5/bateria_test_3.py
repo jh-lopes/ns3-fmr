@@ -26,7 +26,7 @@ RESULT_RE = re.compile(
     r"jain_vazao=([0-9.eE+-]+).*?rng_run=([0-9]+)"
 )
 FIELDS = (
-    "scenario", "ue_count", "radius_m", "bandwidth_hz", "lambda_pps",
+    "scenario", "ue_count", "flows_per_ue", "radius_m", "bandwidth_hz", "lambda_pps",
     "offered_load_mbps", "scheduler", "seed", "rng_run",
     "throughput_mbps", "jain", "window_throughput_mean_mbps",
     "window_jain_mean", "position_hash", "status", "elapsed_s",
@@ -38,10 +38,12 @@ FIELDS = (
 class Scenario:
     ue_count: int
     radius_m: int
+    flows_per_ue: int = 1
 
     @property
     def name(self) -> str:
-        return f"static_random_{self.ue_count}ues_{self.radius_m}m"
+        return (f"static_random_{self.ue_count}ues_{self.radius_m}m_"
+                f"{self.flows_per_ue}flows_per_ue")
 
 
 class ProgressPanel:
@@ -160,9 +162,9 @@ def run_one_with_progress(args: argparse.Namespace, scenario: Scenario,
     return row
 
 
-def scenarios(ue_count: int, radius_m: int) -> list[Scenario]:
+def scenarios(ue_count: int, radius_m: int, flows_per_ue: int = 1) -> list[Scenario]:
     """Retorna somente o cenário controlado solicitado para a Bateria 3."""
-    return [Scenario(ue_count, radius_m)]
+    return [Scenario(ue_count, radius_m, flows_per_ue)]
 
 
 def read_rows(path: Path) -> list[dict[str, str]]:
@@ -231,6 +233,7 @@ def run_one(args: argparse.Namespace, scenario: Scenario, scheduler: str,
         f"--mobilityBounds={scenario.radius_m}",
         f"--bandwidth={args.bandwidth}",
         f"--lambdaOverride={args.lambda_pps}",
+        f"--flowsPerUe={scenario.flows_per_ue}",
         "--EnableConsoleDetails=false", "--EnableWindowCsv=true",
         f"--WindowSizeMs={args.window_ms}", f"--WindowCsvPath={window}",
         "--EnableUeSummaryCsv=true", f"--UeSummaryCsvPath={ue}",
@@ -245,9 +248,11 @@ def run_one(args: argparse.Namespace, scenario: Scenario, scheduler: str,
     (output / "console.log").write_text(console, encoding="utf-8")
     row: dict[str, object] = {
         "scenario": scenario.name, "ue_count": scenario.ue_count,
+        "flows_per_ue": scenario.flows_per_ue,
         "radius_m": scenario.radius_m, "bandwidth_hz": args.bandwidth,
         "lambda_pps": args.lambda_pps,
-        "offered_load_mbps": scenario.ue_count * args.lambda_pps * 1500 * 8 / 1e6,
+        "offered_load_mbps": (scenario.ue_count * scenario.flows_per_ue *
+                              args.lambda_pps * 1500 * 8 / 1e6),
         "scheduler": scheduler,
         "seed": args.seed, "rng_run": rng_run, "throughput_mbps": "",
         "jain": "", "window_throughput_mean_mbps": "",
@@ -370,8 +375,10 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--bandwidth", type=int, default=100_000_000)
     parser.add_argument(
         "--lambda-pps", type=int, default=DEFAULT_LAMBDA_PPS,
-        help="Taxa por UE. 500 pps com pacotes de 1500 bytes equivale a 6 Mbps/UE."
+        help="Taxa por fluxo. 500 pps com 1500 bytes equivale a 6 Mbps/fluxo."
     )
+    parser.add_argument("--flows-per-ue", type=int, default=1,
+                        help="Número de fluxos UDP independentes por UE.")
     parser.add_argument("--seed", type=int, default=1)
     parser.add_argument("--sim-time", type=float, default=30.0)
     parser.add_argument("--window-ms", type=int, default=100)
@@ -398,7 +405,8 @@ def parse_args() -> argparse.Namespace:
     args.output = args.output.resolve()
     args.sim_binary = resolve_binary(args.sim_binary)
     if (args.workers < 1 or args.ue_count < 2 or args.radius_m <= 10
-            or args.bandwidth <= 0 or args.lambda_pps <= 0
+            or args.bandwidth <= 0 or args.lambda_pps <= 0 or args.flows_per_ue <= 0
+            or args.ue_count * args.flows_per_ue > 65536 - 1234
             or not 1 <= args.min_runs <= args.max_runs):
         parser.error("parâmetros físicos/estatísticos inválidos")
     return args
@@ -408,7 +416,7 @@ def main() -> int:
     args = parse_args()
     args.output.mkdir(parents=True, exist_ok=True)
     ledger = args.output / "executions.csv"
-    for scenario in scenarios(args.ue_count, args.radius_m):
+    for scenario in scenarios(args.ue_count, args.radius_m, args.flows_per_ue):
         while True:
             rows = read_rows(ledger)
             if converged(rows, scenario, args):

@@ -27,7 +27,7 @@ RESULT_RE = re.compile(
     r"jain_vazao=([0-9.eE+-]+).*?rng_run=([0-9]+)"
 )
 FIELDS = (
-    "scenario", "application_mode", "ue_count", "radius_m", "bandwidth_hz", "lambda_pps",
+    "scenario", "application_mode", "ue_count", "flows_per_ue", "radius_m", "bandwidth_hz", "lambda_pps",
     "offered_load_mbps", "traffic_stop_s", "drain_time_s", "total_stop_s",
     "flow_max_per_hop_delay_s", "window_ms", "channel_scenario",
     "channel_condition", "channel_model", "shadowing_enabled", "rb_per_rbg",
@@ -54,12 +54,14 @@ class Scenario:
     channel_condition: str = "Default"
     channel_model: str = "ThreeGpp"
     shadowing_enabled: bool = True
+    flows_per_ue: int = 1
 
     @property
     def name(self) -> str:
         shadowing = "shadowing" if self.shadowing_enabled else "no_shadowing"
         return (f"{self.application_mode}_static_uniform_area_"
                 f"{self.ue_count}ues_{self.radius_m}m_"
+                f"{self.flows_per_ue}flows_per_ue_"
                 f"{self.channel_scenario}_{self.channel_condition}_"
                 f"{self.channel_model}_{shadowing}")
 
@@ -185,10 +187,12 @@ def scenarios(ue_count: int, radius_m: int,
               channel_scenario: str = "UMa",
               channel_condition: str = "Default",
               channel_model: str = "ThreeGpp",
-              shadowing_enabled: bool = True) -> list[Scenario]:
+              shadowing_enabled: bool = True,
+              flows_per_ue: int = 1) -> list[Scenario]:
     """Cria cenários pareados separados para UDP, HTTP e tráfego misto."""
     return [Scenario(ue_count, radius_m, mode, channel_scenario,
-                     channel_condition, channel_model, shadowing_enabled)
+                     channel_condition, channel_model, shadowing_enabled,
+                     flows_per_ue)
             for mode in application_modes]
 
 
@@ -236,13 +240,14 @@ def sha256_file(path: Path) -> str:
     return digest.hexdigest()
 
 
-def udp_offered_load_mbps(scenario: Scenario, lambda_pps: int) -> float | None:
+def udp_offered_load_mbps(scenario: Scenario, lambda_pps: int,
+                          flows_per_ue: int = 1) -> float | None:
     """Carga UDP determinística; HTTP 3GPP é estocástico e não usa lambda."""
     if scenario.application_mode == "http":
         return None
     udp_ues = (scenario.ue_count if scenario.application_mode == "udp"
                else (scenario.ue_count + 1) // 2)
-    return udp_ues * lambda_pps * 1500 * 8 / 1e6
+    return udp_ues * flows_per_ue * lambda_pps * 1500 * 8 / 1e6
 
 
 def read_csv_required(path: Path, required: set[str]) -> list[dict[str, str]]:
@@ -262,13 +267,14 @@ def read_csv_required(path: Path, required: set[str]) -> list[dict[str, str]]:
 def validate_corrected_outputs(ue_path: Path, window_path: Path,
                                expected_run: int, expected_ues: int,
                                radius_m: float,
+                               expected_flows_per_ue: int = 1,
                                application_mode: str = "udp",
                                channel_scenario: str = "UMa",
                                channel_condition: str = "Default",
                                channel_model: str = "ThreeGpp",
                                shadowing_enabled: bool = True) -> dict[str, float]:
     ue_rows = read_csv_required(ue_path, {
-        "rng_run", "application_mode", "ue_id", "x_initial_m", "y_initial_m", "z_initial_m",
+        "rng_run", "application_mode", "flows_per_ue", "ue_id", "x_initial_m", "y_initial_m", "z_initial_m",
         "distance_gnb_m", "app_throughput_traffic_mbps",
         "app_goodput_total_mbps", "app_jain_traffic", "app_jain_total",
         "flowmon_throughput_mbps", "flowmon_jain", "app_rx_packets_total",
@@ -285,6 +291,8 @@ def validate_corrected_outputs(ue_path: Path, window_path: Path,
         raise RuntimeError(f"ue_summary: {len(ue_rows)} UEs; esperado {expected_ues}")
     if {int(row["ue_id"]) for row in ue_rows} != set(range(expected_ues)):
         raise RuntimeError("ue_summary contém ue_id ausente ou duplicado")
+    if any(int(row["flows_per_ue"]) != expected_flows_per_ue for row in ue_rows):
+        raise RuntimeError("flows_per_ue divergente no ue_summary")
 
     for row in ue_rows:
         if int(row["rng_run"]) != expected_run:
@@ -314,7 +322,7 @@ def validate_corrected_outputs(ue_path: Path, window_path: Path,
             raise RuntimeError(f"UE {row['ue_id']} recebeu pacote sem SeqTsHeader")
 
     windows = read_csv_required(window_path, {
-        "rng_run", "window_id", "start_time_s", "end_time_s", "duration_s",
+        "rng_run", "flows_per_ue", "window_id", "start_time_s", "end_time_s", "duration_s",
         "phase", "aggregate_thr_mbps", "jain_throughput", "app_rx_packets",
     })
     ids = [int(row["window_id"]) for row in windows]
@@ -322,6 +330,8 @@ def validate_corrected_outputs(ue_path: Path, window_path: Path,
         raise RuntimeError("window_log possui lacunas ou IDs duplicados")
     if any(int(row["rng_run"]) != expected_run for row in windows):
         raise RuntimeError("rng_run divergente no window_log")
+    if any(int(row["flows_per_ue"]) != expected_flows_per_ue for row in windows):
+        raise RuntimeError("flows_per_ue divergente no window_log")
     if not {row["phase"] for row in windows}.issubset({"traffic", "drain"}):
         raise RuntimeError("window_log contém fase desconhecida")
     if any(float(row["duration_s"]) <= 0 for row in windows):
@@ -418,6 +428,7 @@ def run_one(args: argparse.Namespace, scenario: Scenario, scheduler: str,
         f"--channelModel={args.channel_model}",
         f"--enableShadowing={'true' if args.enable_shadowing else 'false'}",
         f"--lambdaOverride={args.lambda_pps}",
+        f"--flowsPerUe={scenario.flows_per_ue}",
         "--EnableConsoleDetails=false", "--EnableWindowCsv=true",
         f"--WindowSizeMs={args.window_ms}", f"--WindowCsvPath={window}",
         "--EnableUeSummaryCsv=true", f"--UeSummaryCsvPath={ue}",
@@ -433,6 +444,7 @@ def run_one(args: argparse.Namespace, scenario: Scenario, scheduler: str,
         "seed": args.seed,
         "rng_run": rng_run,
         "ue_count": scenario.ue_count,
+        "flows_per_ue": scenario.flows_per_ue,
         "radius_m": scenario.radius_m,
         "spatial_distribution": "uniform_area_annulus",
         "bandwidth_hz": args.bandwidth,
@@ -445,7 +457,8 @@ def run_one(args: argparse.Namespace, scenario: Scenario, scheduler: str,
         "shadowing_enabled": args.enable_shadowing,
         "packet_size_bytes": 1500,
         "lambda_pps": args.lambda_pps,
-        "offered_load_mbps": udp_offered_load_mbps(scenario, args.lambda_pps),
+        "offered_load_mbps": udp_offered_load_mbps(
+            scenario, args.lambda_pps, scenario.flows_per_ue),
         "traffic_stop_s": args.sim_time,
         "drain_time_s": args.drain_time,
         "total_stop_s": args.sim_time + args.drain_time,
@@ -469,9 +482,11 @@ def run_one(args: argparse.Namespace, scenario: Scenario, scheduler: str,
     row: dict[str, object] = {
         "scenario": scenario.name, "application_mode": scenario.application_mode,
         "ue_count": scenario.ue_count,
+        "flows_per_ue": scenario.flows_per_ue,
         "radius_m": scenario.radius_m, "bandwidth_hz": args.bandwidth,
         "lambda_pps": args.lambda_pps,
-        "offered_load_mbps": udp_offered_load_mbps(scenario, args.lambda_pps),
+        "offered_load_mbps": udp_offered_load_mbps(
+            scenario, args.lambda_pps, scenario.flows_per_ue),
         "traffic_stop_s": args.sim_time, "drain_time_s": args.drain_time,
         "total_stop_s": args.sim_time + args.drain_time,
         "flow_max_per_hop_delay_s": args.flow_max_per_hop_delay,
@@ -505,7 +520,7 @@ def run_one(args: argparse.Namespace, scenario: Scenario, scheduler: str,
             raise RuntimeError("rng_run divergente na linha [RESULT]")
         metrics = validate_corrected_outputs(
             ue, window, rng_run, scenario.ue_count, scenario.radius_m,
-            scenario.application_mode, args.channel_scenario,
+            scenario.flows_per_ue, scenario.application_mode, args.channel_scenario,
             args.channel_condition, args.channel_model, args.enable_shadowing)
         if abs(float(match.group(1)) - metrics["app_throughput_traffic_mbps"]) > 1e-3:
             raise RuntimeError("throughput da linha [RESULT] diverge do ue_summary")
@@ -645,8 +660,10 @@ def parse_args() -> argparse.Namespace:
     parser.set_defaults(enable_shadowing=True)
     parser.add_argument(
         "--lambda-pps", type=int, default=DEFAULT_LAMBDA_PPS,
-        help="Taxa por UE. 500 pps com pacotes de 1500 bytes equivale a 6 Mbps/UE."
+        help="Taxa por fluxo. 500 pps com 1500 bytes equivale a 6 Mbps/fluxo."
     )
+    parser.add_argument("--flows-per-ue", type=int, default=1,
+                        help="Número de fluxos UDP independentes por UE.")
     parser.add_argument("--seed", type=int, default=1)
     parser.add_argument("--sim-time", type=float, default=30.0)
     parser.add_argument("--drain-time", type=float, default=15.0)
@@ -678,7 +695,8 @@ def parse_args() -> argparse.Namespace:
     args.output = args.output.resolve()
     args.sim_binary = resolve_binary(args.sim_binary)
     if (args.workers < 1 or args.ue_count < 2 or args.radius_m <= 10
-            or args.bandwidth <= 0 or args.lambda_pps <= 0
+            or args.bandwidth <= 0 or args.lambda_pps <= 0 or args.flows_per_ue <= 0
+            or args.ue_count * args.flows_per_ue > 65536 - 1234
             or args.sim_time <= 0.4 or args.drain_time < 0
             or args.flow_max_per_hop_delay <= args.sim_time + args.drain_time
             or args.central_frequency <= 0 or args.numerology not in (0, 1, 2, 3, 4)
@@ -696,7 +714,7 @@ def main() -> int:
     for scenario in scenarios(
             args.ue_count, args.radius_m, args.application_modes,
             args.channel_scenario, args.channel_condition,
-            args.channel_model, args.enable_shadowing):
+            args.channel_model, args.enable_shadowing, args.flows_per_ue):
         while True:
             rows = read_rows(ledger)
             if converged(rows, scenario, args):

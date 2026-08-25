@@ -154,7 +154,7 @@ main(int argc, char* argv[])
     // base. NÃO funciona para fmr_rl, que sobrescreve AssignDLRBG()
     // com sua própria lógica e usa EnableSlotCsv/SlotCsvPath (acima)
     // em vez deste. Colunas do CSV gerado:
-    // time_s,beam_id,rnti,dl_mcs,buf_req,alloc_rbg
+    // time_s,beam_id,rnti,dl_mcs,buf_req,allocated_rbg_symbol_units
     bool        enableCommonSlotCsv  = false;
     std::string commonSlotCsvPath    = "slot_log_common.csv";
     bool        commonSlotCsvAppend  = false;
@@ -175,6 +175,9 @@ main(int argc, char* argv[])
     // Valor 0 = usa o lambda definido pelo perfil (padrão).
     // Útil para testes de sobrecarga sem criar um novo perfil.
     uint32_t lambdaOverride = 0;
+    // Zero preserva o valor definido pelo perfil; valores positivos permitem
+    // campanhas com vários fluxos UDP independentes por UE.
+    uint32_t flowsPerUeOverride = 0;
 
     // Detalhes por UE no console ao final da simulação
     bool        enableConsoleDetails = false;
@@ -293,6 +296,9 @@ main(int argc, char* argv[])
     cmd.AddValue("lambdaOverride",
                  "Sobrescreve lambda do perfil (0=usa perfil, >0=sobrescreve)",
                  lambdaOverride);
+    cmd.AddValue("flowsPerUe",
+                 "Fluxos UDP por UE (0=usa perfil, >0=sobrescreve)",
+                 flowsPerUeOverride);
     cmd.AddValue("EnableConsoleDetails",
                  "Exibe resumo por UE no console ao final",
                  enableConsoleDetails);
@@ -359,6 +365,18 @@ main(int argc, char* argv[])
                    << perfil.lambda << " → " << lambdaOverride << " pkt/s");
         perfil.lambda = lambdaOverride;
     }
+    if (flowsPerUeOverride > 0)
+    {
+        NS_LOG_UNCOND("[VJ5G] Fluxos por UE sobrescritos: "
+                   << perfil.flowsPorUe << " → " << flowsPerUeOverride);
+        perfil.flowsPorUe = flowsPerUeOverride;
+    }
+    NS_ABORT_MSG_IF(perfil.flowsPorUe == 0, "flowsPerUe deve ser maior que zero");
+    const uint64_t udpPortCount =
+        static_cast<uint64_t>(ueNumPergNb) * perfil.flowsPorUe;
+    constexpr uint32_t udpPortBase = 1234;
+    NS_ABORT_MSG_IF(udpPortCount > 65536ULL - udpPortBase,
+                    "ueNumPergNb * flowsPerUe excede o espaço de portas UDP");
 
     NS_LOG_INFO("Perfil: "    << perfil.nome
              << " pacote="    << perfil.pacoteBytes << "B"
@@ -886,7 +904,7 @@ main(int argc, char* argv[])
 
     // Porta base para os fluxos UDP.
     // UE0/fluxo0=1234, UE0/fluxo1=1235, UE1/fluxo0=1236, ...
-    uint16_t portBase = 1234;
+    const uint16_t portBase = udpPortBase;
     std::vector<Ptr<UdpServer>> udpServers;
 
     if (applicationMode == "http" || applicationMode == "mixed")
@@ -945,10 +963,12 @@ main(int argc, char* argv[])
     serverApps.Stop(totalStopTime);
     clientApps.Stop(simTime);
 
+    const uint32_t udpUeCount = applicationMode == "udp" ? ueNodes.GetN() :
+        (applicationMode == "mixed" ? (ueNodes.GetN() + 1) / 2 : 0);
     NS_LOG_INFO("Aplicações instaladas: mode=" << applicationMode
              << " UEs=" << ueNodes.GetN()
              << " flows/UE=" << perfil.flowsPorUe
-             << " total_flows=" << ueNodes.GetN() * perfil.flowsPorUe
+             << " total_udp_flows=" << udpUeCount * perfil.flowsPorUe
              << " pacote=" << perfil.pacoteBytes << "B"
              << " lambda=" << perfil.lambda << "pkt/s"
              << " bearer_qci=" << static_cast<int>(perfil.bearerQci));
@@ -1061,7 +1081,7 @@ main(int argc, char* argv[])
     if (enableWindowCsv)
     {
         g_windowCsv.open(windowCsvPath);
-        g_windowCsv << "scheduler,traffic_profile,num_ues,seed,rng_run,"
+        g_windowCsv << "scheduler,traffic_profile,num_ues,flows_per_ue,seed,rng_run,"
                     << "bandwidth_mhz,window_id,start_time_s,end_time_s,"
                     << "duration_s,phase,aggregate_thr_mbps,jain_throughput,"
                     << "app_rx_packets\n";
@@ -1075,7 +1095,7 @@ main(int argc, char* argv[])
                             &RegistrarJanela,
                             MilliSeconds(windowSizeMs), simTime, totalStopTime,
                             schedulerMode, trafficProfile,
-                            ueNumPergNb, seed, run, bandwidth / 1e6);
+                            ueNumPergNb, perfil.flowsPorUe, seed, run, bandwidth / 1e6);
 
         NS_LOG_INFO("Log por janela ativo: windowSizeMs=" << windowSizeMs
                  << " path=" << windowCsvPath);
@@ -1119,8 +1139,8 @@ main(int argc, char* argv[])
     if (enableFlowSummaryCsv)
     {
         flowCsv.open(flowSummaryCsvPath);
-        flowCsv << "scheduler,traffic_profile,application_mode,num_ues,seed,rng_run,"
-                << "bandwidth_mhz,flow_id,ue_id,"
+        flowCsv << "scheduler,traffic_profile,application_mode,num_ues,flows_per_ue,seed,rng_run,"
+                << "bandwidth_mhz,flow_id,ue_id,flow_index,"
                 << "flowmon_throughput_mbps,flowmon_delay_mean_ms,"
                 << "flowmon_delay_p99_ms,flowmon_jitter_mean_ms,"
                 << "flowmon_undelivered_pct,flowmon_pdr_pct,"
@@ -1140,10 +1160,12 @@ main(int argc, char* argv[])
 
         uint16_t destPort = tuple.destinationPort;
         uint32_t ueIdx = ueNodes.GetN();
+        int64_t flowIdx = -1;
         if (destPort >= portBase && destPort < portBase +
                 static_cast<uint16_t>(ueNumPergNb * perfil.flowsPorUe))
         {
             ueIdx = (destPort - portBase) / perfil.flowsPorUe;
+            flowIdx = (destPort - portBase) % perfil.flowsPorUe;
         }
         else
         {
@@ -1227,9 +1249,12 @@ main(int argc, char* argv[])
         if (ueIdx < resumoPorUe.size())
         {
             resumoPorUe[ueIdx].throughputMbps += throughputMbps;
-            resumoPorUe[ueIdx].delaySomaMs    += delayMeanMs;
+            resumoPorUe[ueIdx].delayPonderadoSomaMs +=
+                delayMeanMs * static_cast<double>(flowStats.rxPackets);
             resumoPorUe[ueIdx].delayP99Ms      =
                 std::max(resumoPorUe[ueIdx].delayP99Ms, delayP99Ms);
+            resumoPorUe[ueIdx].fluxosObservados += 1;
+            resumoPorUe[ueIdx].pacotesComDelay += flowStats.rxPackets;
             resumoPorUe[ueIdx].txPackets       += flowStats.txPackets;
             resumoPorUe[ueIdx].rxPackets       += flowStats.rxPackets;
             resumoPorUe[ueIdx].undeliveredAtStopPackets     += undeliveredAtStop;
@@ -1248,11 +1273,13 @@ main(int argc, char* argv[])
                     << trafficProfile << ","
                     << applicationMode << ","
                     << ueNumPergNb << ","
+                    << perfil.flowsPorUe << ","
                     << seed << ","
                     << run << ","
                     << (bandwidth / 1e6) << ","
                     << flowId << ","
                     << ueIdx << ","
+                    << flowIdx << ","
                     << throughputMbps << ","
                     << delayMeanMs << ","
                     << delayP99Ms << ","
@@ -1315,7 +1342,7 @@ main(int argc, char* argv[])
         // com o log nativo do 5G-LENA slot_log_common.csv (RBG por UE por
         // slot, indexado por RNTI — ver --EnableCommonSlotCsv), sem repetir
         // o erro de assumir rnti = ueIdx + 1. Ver computar_rbg_por_ue.py.
-        ueCsv << "scheduler,traffic_profile,application_mode,num_ues,seed,rng_run,bandwidth_mhz,"
+        ueCsv << "scheduler,traffic_profile,application_mode,num_ues,flows_per_ue,seed,rng_run,bandwidth_mhz,"
               << "position_mode,mobility_enabled,mobility_bounds_m,"
               << "ue_id,rnti,x_initial_m,y_initial_m,z_initial_m,"
               << "app_throughput_traffic_mbps,app_goodput_total_mbps,"
@@ -1356,8 +1383,8 @@ main(int argc, char* argv[])
         const ResumoUe& r = resumoPorUe[i];
         const AppRxStats& app = g_appRxStats[i];
 
-        uint32_t nFluxos = perfil.flowsPorUe;
-        double delayMedioMs = nFluxos > 0 ? r.delaySomaMs / nFluxos : 0.0;
+        const double delayMedioMs = r.pacotesComDelay > 0
+            ? r.delayPonderadoSomaMs / static_cast<double>(r.pacotesComDelay) : 0.0;
 
         double flowmonPdrPct = r.txPackets > 0
             ? static_cast<double>(r.rxPackets) / r.txPackets * 100.0 : 0.0;
@@ -1443,6 +1470,7 @@ main(int argc, char* argv[])
                   << trafficProfile << ","
                   << applicationMode << ","
                   << ueNumPergNb << ","
+                  << perfil.flowsPorUe << ","
                   << seed << ","
                   << run << ","
                   << std::setprecision(3)

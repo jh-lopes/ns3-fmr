@@ -19,6 +19,9 @@ class BateriaTest3Tests(unittest.TestCase):
     def test_default_load_uses_competitive_not_collapsed_regime(self):
         self.assertEqual(MODULE.DEFAULT_LAMBDA_PPS, 500)
 
+    def test_ledger_audits_flows_per_ue(self):
+        self.assertIn("flows_per_ue", MODULE.FIELDS)
+
     def test_smoke_mode_reduces_campaign_to_one_short_run(self):
         args = Namespace(smoke=True, sim_time=30.0, min_runs=30,
                          max_runs=100, batch_size=10)

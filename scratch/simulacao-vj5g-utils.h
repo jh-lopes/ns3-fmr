@@ -73,7 +73,7 @@ struct PerfilDeTrafego
 // eMBB (Enhanced Mobile Broadband):
 //   - 1500 bytes: MTU típica de vídeo HD
 //   - lambda=1000: ~12 Mbps por fluxo, estressando a rede
-//   - 2 fluxos/UE: simula vídeo + dados simultâneos
+//   - 1 fluxo/UE por padrão; configurável com --flowsPerUe
 //   - NGBR_LOW_LAT_EMBB (QCI 70): Non-GBR, baixa latência
 //   - Sem discard: eMBB tolera variação de delay
 //   Referência: 3GPP TR 38.913 Tabela 7.1
@@ -533,6 +533,7 @@ RegistrarJanela(Time windowSize,
                  std::string schedulerMode,
                  std::string trafficProfile,
                  uint16_t ueNumPergNb,
+                 uint32_t flowsPerUe,
                  uint32_t seed,
                  uint32_t rngRun,
                  double bandwidthMhz)
@@ -573,6 +574,7 @@ RegistrarJanela(Time windowSize,
         g_windowCsv << schedulerMode << ","
                     << trafficProfile << ","
                     << ueNumPergNb << ","
+                    << flowsPerUe << ","
                     << seed << ","
                     << rngRun << ","
                     << bandwidthMhz << ","
@@ -603,7 +605,7 @@ RegistrarJanela(Time windowSize,
                             &RegistrarJanela,
                             windowSize, trafficStopTime, totalStopTime,
                             schedulerMode, trafficProfile,
-                            ueNumPergNb, seed, rngRun, bandwidthMhz);
+                            ueNumPergNb, flowsPerUe, seed, rngRun, bandwidthMhz);
     }
 }
 
@@ -745,8 +747,10 @@ CalcularJainVazao(const std::vector<double>& throughputs)
 struct ResumoUe
 {
     double   throughputMbps = 0.0; // soma dos fluxos do UE
-    double   delaySomaMs    = 0.0; // soma para calcular média
+    double   delayPonderadoSomaMs = 0.0; // soma delay_medio * pacotes recebidos
     double   delayP99Ms     = 0.0; // máximo p99 entre os fluxos
+    uint32_t fluxosObservados = 0;
+    uint64_t pacotesComDelay = 0;
     uint64_t txPackets      = 0;
     uint64_t rxPackets      = 0;
     uint64_t undeliveredAtStopPackets    = 0;

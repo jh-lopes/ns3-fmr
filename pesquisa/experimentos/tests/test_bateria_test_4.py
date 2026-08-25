@@ -23,7 +23,7 @@ class BateriaTest4Tests(unittest.TestCase):
         ue = root / "ue_summary.csv"
         window = root / "window_log.csv"
         ue_fields = (
-            "rng_run", "application_mode", "ue_id", "x_initial_m", "y_initial_m", "z_initial_m",
+            "rng_run", "application_mode", "flows_per_ue", "ue_id", "x_initial_m", "y_initial_m", "z_initial_m",
             "distance_gnb_m", "app_throughput_traffic_mbps",
             "app_goodput_total_mbps", "app_jain_traffic", "app_jain_total",
             "flowmon_throughput_mbps", "flowmon_jain", "app_rx_packets_total",
@@ -44,6 +44,7 @@ class BateriaTest4Tests(unittest.TestCase):
             for ue_id, x in enumerate((20.0, radius)):
                 writer.writerow({
                     "rng_run": 1, "application_mode": application_mode,
+                    "flows_per_ue": 2,
                     "ue_id": ue_id, "x_initial_m": x,
                     "y_initial_m": 0, "z_initial_m": 1.5,
                     "distance_gnb_m": math.sqrt(x*x + 23.5**2),
@@ -73,19 +74,20 @@ class BateriaTest4Tests(unittest.TestCase):
                     "flowmon_throughput_aggregate_mbps": 2.46,
                 })
         window_fields = (
-            "rng_run", "window_id", "start_time_s", "end_time_s",
+            "rng_run", "flows_per_ue", "window_id", "start_time_s", "end_time_s",
             "duration_s", "phase", "aggregate_thr_mbps",
             "jain_throughput", "app_rx_packets",
         )
         with window.open("w", newline="", encoding="utf-8") as handle:
             writer = csv.DictWriter(handle, fieldnames=window_fields)
             writer.writeheader()
-            writer.writerow({"rng_run": 1, "window_id": 0,
+            writer.writerow({"rng_run": 1, "flows_per_ue": 2, "window_id": 0,
                              "start_time_s": .4, "end_time_s": .5,
                              "duration_s": .1, "phase": "traffic",
                              "aggregate_thr_mbps": 2, "jain_throughput": 1,
                              "app_rx_packets": 10})
             writer.writerow({"rng_run": 1,
+                             "flows_per_ue": 2,
                              "window_id": 3 if broken_window else 1,
                              "start_time_s": .5, "end_time_s": .6,
                              "duration_s": .1, "phase": "drain",
@@ -96,7 +98,7 @@ class BateriaTest4Tests(unittest.TestCase):
     def test_corrected_outputs_are_accepted(self):
         with tempfile.TemporaryDirectory() as directory:
             ue, window = self.write_fixture(Path(directory))
-            metrics = MODULE.validate_corrected_outputs(ue, window, 1, 2, 100)
+            metrics = MODULE.validate_corrected_outputs(ue, window, 1, 2, 100, 2)
             self.assertEqual(metrics["app_flowmon_packet_delta"], 0)
             self.assertEqual(metrics["app_throughput_traffic_mbps"], 2.0)
             self.assertEqual(metrics["ues_with_cqi"], 2)
@@ -107,20 +109,20 @@ class BateriaTest4Tests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             ue, window = self.write_fixture(Path(directory), flow_delta=-1)
             with self.assertRaisesRegex(RuntimeError, "UdpServer/FlowMonitor"):
-                MODULE.validate_corrected_outputs(ue, window, 1, 2, 100)
+                MODULE.validate_corrected_outputs(ue, window, 1, 2, 100, 2)
 
     def test_http_does_not_compare_rx_events_with_ip_packets(self):
         with tempfile.TemporaryDirectory() as directory:
             ue, window = self.write_fixture(
                 Path(directory), flow_delta=-10, application_mode="http")
             metrics = MODULE.validate_corrected_outputs(
-                ue, window, 1, 2, 100, "http")
+                ue, window, 1, 2, 100, 2, "http")
             self.assertEqual(metrics["app_flowmon_packet_delta"], 20)
 
     def test_missing_radio_traces_are_counted_not_replaced_by_zero(self):
         with tempfile.TemporaryDirectory() as directory:
             ue, window = self.write_fixture(Path(directory), radio_samples=False)
-            metrics = MODULE.validate_corrected_outputs(ue, window, 1, 2, 100)
+            metrics = MODULE.validate_corrected_outputs(ue, window, 1, 2, 100, 2)
             self.assertEqual(metrics["ues_with_cqi"], 0)
             self.assertEqual(metrics["ues_with_measurements"], 0)
             self.assertEqual(metrics["ues_with_rsrq"], 0)
@@ -132,12 +134,12 @@ class BateriaTest4Tests(unittest.TestCase):
             ue, window = self.write_fixture(Path(directory))
             with self.assertRaisesRegex(RuntimeError, "canal divergente"):
                 MODULE.validate_corrected_outputs(
-                    ue, window, 1, 2, 100, channel_scenario="UMi")
+                    ue, window, 1, 2, 100, 2, channel_scenario="UMi")
 
     def test_zero_rsrq_is_marked_unavailable(self):
         with tempfile.TemporaryDirectory() as directory:
             ue, window = self.write_fixture(Path(directory), rsrq_available=False)
-            metrics = MODULE.validate_corrected_outputs(ue, window, 1, 2, 100)
+            metrics = MODULE.validate_corrected_outputs(ue, window, 1, 2, 100, 2)
             self.assertEqual(metrics["ues_with_measurements"], 2)
             self.assertEqual(metrics["ues_with_rsrq"], 0)
             self.assertTrue(math.isnan(metrics["rsrq_mean_db"]))
@@ -146,19 +148,29 @@ class BateriaTest4Tests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             ue, window = self.write_fixture(Path(directory), duplicate=1)
             with self.assertRaisesRegex(RuntimeError, "duplicatas"):
-                MODULE.validate_corrected_outputs(ue, window, 1, 2, 100)
+                MODULE.validate_corrected_outputs(ue, window, 1, 2, 100, 2)
 
     def test_position_outside_annulus_is_rejected(self):
         with tempfile.TemporaryDirectory() as directory:
             ue, window = self.write_fixture(Path(directory), radius=101)
             with self.assertRaisesRegex(RuntimeError, "anel espacial"):
-                MODULE.validate_corrected_outputs(ue, window, 1, 2, 100)
+                MODULE.validate_corrected_outputs(ue, window, 1, 2, 100, 2)
 
     def test_window_gaps_are_rejected(self):
         with tempfile.TemporaryDirectory() as directory:
             ue, window = self.write_fixture(Path(directory), broken_window=True)
             with self.assertRaisesRegex(RuntimeError, "lacunas"):
-                MODULE.validate_corrected_outputs(ue, window, 1, 2, 100)
+                MODULE.validate_corrected_outputs(ue, window, 1, 2, 100, 2)
+
+    def test_offered_load_multiplies_flows_per_ue(self):
+        scenario = MODULE.Scenario(10, 100, "udp")
+        self.assertEqual(MODULE.udp_offered_load_mbps(scenario, 500, 3), 180.0)
+
+    def test_flow_count_mismatch_is_rejected(self):
+        with tempfile.TemporaryDirectory() as directory:
+            ue, window = self.write_fixture(Path(directory))
+            with self.assertRaisesRegex(RuntimeError, "flows_per_ue"):
+                MODULE.validate_corrected_outputs(ue, window, 1, 2, 100, 3)
 
     def test_smoke_sets_short_traffic_and_drain(self):
         args = Namespace(smoke=True, sim_time=30.0, drain_time=15.0,
@@ -169,6 +181,7 @@ class BateriaTest4Tests(unittest.TestCase):
 
     def test_ledger_contains_provenance_and_reconciliation(self):
         expected = {
+            "flows_per_ue",
             "traffic_stop_s", "drain_time_s", "flow_max_per_hop_delay_s",
             "metadata_sha256", "app_rx_packets_total",
             "flowmon_rx_packets_total", "app_flowmon_packet_delta",

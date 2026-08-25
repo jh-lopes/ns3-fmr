@@ -56,6 +56,22 @@ QoS nos modos UDP, HTTP e misto. Para testar apenas UDP, acrescente
 
 ## Campanha
 
+### Vários fluxos por UE
+
+`--flows-per-ue N` cria `N` fluxos UDP independentes por UE UDP. Em modo
+`mixed`, a opção se aplica somente aos UEs pares, destinados a UDP; os UEs
+ímpares continuam usando a aplicação HTTP 3GPP. Em modo `http`, o valor é
+registrado para proveniência, mas não multiplica as sessões HTTP.
+
+`--lambda-pps` representa pacotes por segundo **por fluxo**. A bateria calcula
+a carga UDP como `UEs_UDP × fluxos/UE × lambda × 1500 × 8` e registra
+`flows_per_ue` no nome do cenário, metadados, ledger e CSVs do simulador.
+
+```bash
+python3 scripts-VJ5/bateria_test_4.py --application-modes udp,mixed \
+  --flows-per-ue 3 --lambda-pps 500
+```
+
 ```bash
 python3 scripts-VJ5/bateria_test_4.py \
   --output pesquisa/resultados/4_bateria_test_4 \
