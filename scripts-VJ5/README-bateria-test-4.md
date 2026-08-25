@@ -23,6 +23,8 @@ resultados de aplicações diferentes não são tratados como replicações.
 - CQI, MCS e rank médios a partir de `CqiFeedbackTrace`;
 - RSRP e RSRQ médios da célula servidora via `ReportUeMeasurements`, sempre
   acompanhados das respectivas contagens de amostras.
+- cenário, condição e modelo de canal configuráveis, estado do shadowing e
+  quantidade efetiva de RBs por RBG registrados em cada execução.
 
 ## Semântica temporal
 
@@ -61,6 +63,9 @@ python3 scripts-VJ5/bateria_test_4.py \
   --radius-m 500 \
   --lambda-pps 500 \
   --application-modes udp,http,mixed \
+  --channel-scenario UMa \
+  --channel-condition Default \
+  --channel-model ThreeGpp \
   --sim-time 30 \
   --drain-time 15 \
   --flow-max-per-hop-delay 60 \
@@ -73,6 +78,10 @@ python3 scripts-VJ5/bateria_test_4.py \
 
 O runner pode ser interrompido e retomado com o mesmo `--output`; execuções
 `OK` existentes não são repetidas.
+
+O shadowing fica ativo por padrão. Use `--disable-shadowing` somente em uma
+campanha separada; misturar execuções com e sem shadowing no mesmo cenário
+invalida o pareamento estatístico.
 
 ## Arquivos por execução
 

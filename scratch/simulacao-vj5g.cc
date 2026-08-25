@@ -65,6 +65,7 @@
 #include <fstream>
 #include <iomanip>
 #include <iostream>
+#include <locale>
 #include <map>
 #include <numeric>
 #include <numbers>
@@ -193,6 +194,10 @@ main(int argc, char* argv[])
     // tamanho ideal ainda é um dos pontos em aberto do Pilar 1
     // e deve ser calibrado depois de olhar os primeiros dados.
     uint32_t    windowSizeMs         = 100;
+    std::string channelScenario      = "UMa";
+    std::string channelCondition     = "Default";
+    std::string channelModel         = "ThreeGpp";
+    bool        enableShadowing      = true;
 
     // --------------------------------------------------------
     // Registro dos parâmetros na linha de comando
@@ -306,6 +311,14 @@ main(int argc, char* argv[])
     cmd.AddValue("WindowSizeMs",
                  "Duração da janela de recálculo em ms (padrão: 100)",
                  windowSizeMs);
+    cmd.AddValue("channelScenario",
+                 "Cenário 3GPP: UMa | UMi | RMa | InH",
+                 channelScenario);
+    cmd.AddValue("channelCondition", "Condição do canal", channelCondition);
+    cmd.AddValue("channelModel", "Modelo espectral", channelModel);
+    cmd.AddValue("enableShadowing",
+                 "Ativa shadowing no modelo de perda",
+                 enableShadowing);
 
     cmd.Parse(argc, argv);
 
@@ -597,7 +610,10 @@ main(int argc, char* argv[])
         ccBwpCreator.CreateOperationBandContiguousCc(bandConf);
 
     Ptr<NrChannelHelper> channelHelper = CreateObject<NrChannelHelper>();
-    channelHelper->ConfigureFactories("UMa", "Default", "ThreeGpp");
+    channelHelper->ConfigureFactories(
+        channelScenario, channelCondition, channelModel);
+    channelHelper->SetPathlossAttribute(
+        "ShadowingEnabled", BooleanValue(enableShadowing));
     channelHelper->AssignChannelsToBands({band});
     allBwps = CcBwpCreator::GetAllBwps({band});
 
@@ -800,6 +816,8 @@ main(int argc, char* argv[])
     // APÓS SetSchedulerTypeId — ordem obrigatória no 5G-LENA
     NetDeviceContainer gnbDevs =
         nrHelper->InstallGnbDevice(gnbNodes, allBwps);
+    const uint32_t rbPerRbg =
+        nrHelper->GetGnbMac(gnbDevs.Get(0), 0)->GetNumRbPerRbg();
     NetDeviceContainer ueDevs =
         nrHelper->InstallUeDevice(ueNodes, allBwps);
 
@@ -1291,6 +1309,8 @@ main(int argc, char* argv[])
     if (enableUeSummaryCsv)
     {
         ueCsv.open(ueSummaryCsvPath);
+        ueCsv.imbue(std::locale::classic());
+        ueCsv << std::fixed << std::setprecision(6);
         // Coluna "rnti" adicionada em 12/ago/2026: permite cruzar este CSV
         // com o log nativo do 5G-LENA slot_log_common.csv (RBG por UE por
         // slot, indexado por RNTI — ver --EnableCommonSlotCsv), sem repetir
@@ -1318,7 +1338,8 @@ main(int argc, char* argv[])
               << "packet_size_bytes,lambda_pps,app_start_s,traffic_stop_s,"
               << "drain_time_s,total_stop_s,flow_max_per_hop_delay_s,"
               << "window_size_ms,central_frequency_hz,total_tx_power_dbm,"
-              << "numerology,tdd_pattern\n";
+              << "numerology,tdd_pattern,rb_per_rbg,channel_scenario,"
+              << "channel_condition,channel_model,shadowing_enabled\n";
     }
 
     if (enableConsoleDetails)
@@ -1465,7 +1486,12 @@ main(int argc, char* argv[])
                   << centralFrequency << ","
                   << totalTxPowerDbm << ","
                   << static_cast<uint32_t>(numerology) << ","
-                  << tddPattern << "\n";
+                  << tddPattern << ","
+                  << rbPerRbg << ","
+                  << channelScenario << ","
+                  << channelCondition << ","
+                  << channelModel << ","
+                  << (enableShadowing ? "true" : "false") << "\n";
         }
     }
 
@@ -1502,6 +1528,10 @@ main(int argc, char* argv[])
                << " (agora aplicada de fato — ver correção de 12/ago/2026)" << std::endl;
     std::cout << "Padrão TDD          : " << tddPattern
                << " (agora aplicado de fato — ver correção de 13/ago/2026)" << std::endl;
+    std::cout << "Canal 3GPP          : " << channelScenario << "/"
+              << channelCondition << "/" << channelModel
+              << " | shadowing=" << (enableShadowing ? "on" : "off")
+              << " | RB/RBG=" << rbPerRbg << std::endl;
     std::cout << "Fim do tráfego      : " << simTime.GetSeconds() << " s" << std::endl;
     std::cout << "Tempo de drain      : " << drainTime.GetSeconds() << " s" << std::endl;
     std::cout << "Fim da simulação    : " << totalStopTime.GetSeconds() << " s" << std::endl;

@@ -29,7 +29,9 @@ RESULT_RE = re.compile(
 FIELDS = (
     "scenario", "application_mode", "ue_count", "radius_m", "bandwidth_hz", "lambda_pps",
     "offered_load_mbps", "traffic_stop_s", "drain_time_s", "total_stop_s",
-    "flow_max_per_hop_delay_s", "window_ms", "scheduler", "seed", "rng_run",
+    "flow_max_per_hop_delay_s", "window_ms", "channel_scenario",
+    "channel_condition", "channel_model", "shadowing_enabled", "rb_per_rbg",
+    "scheduler", "seed", "rng_run",
     "app_throughput_traffic_mbps", "app_goodput_total_mbps",
     "app_jain_traffic", "app_jain_total", "flowmon_throughput_mbps",
     "flowmon_jain", "traffic_window_throughput_mean_mbps",
@@ -47,11 +49,18 @@ class Scenario:
     ue_count: int
     radius_m: int
     application_mode: str = "udp"
+    channel_scenario: str = "UMa"
+    channel_condition: str = "Default"
+    channel_model: str = "ThreeGpp"
+    shadowing_enabled: bool = True
 
     @property
     def name(self) -> str:
+        shadowing = "shadowing" if self.shadowing_enabled else "no_shadowing"
         return (f"{self.application_mode}_static_uniform_area_"
-                f"{self.ue_count}ues_{self.radius_m}m")
+                f"{self.ue_count}ues_{self.radius_m}m_"
+                f"{self.channel_scenario}_{self.channel_condition}_"
+                f"{self.channel_model}_{shadowing}")
 
 
 class ProgressPanel:
@@ -171,9 +180,15 @@ def run_one_with_progress(args: argparse.Namespace, scenario: Scenario,
 
 
 def scenarios(ue_count: int, radius_m: int,
-              application_modes: tuple[str, ...] = ("udp",)) -> list[Scenario]:
+              application_modes: tuple[str, ...] = ("udp",),
+              channel_scenario: str = "UMa",
+              channel_condition: str = "Default",
+              channel_model: str = "ThreeGpp",
+              shadowing_enabled: bool = True) -> list[Scenario]:
     """Cria cenários pareados separados para UDP, HTTP e tráfego misto."""
-    return [Scenario(ue_count, radius_m, mode) for mode in application_modes]
+    return [Scenario(ue_count, radius_m, mode, channel_scenario,
+                     channel_condition, channel_model, shadowing_enabled)
+            for mode in application_modes]
 
 
 def read_rows(path: Path) -> list[dict[str, str]]:
@@ -246,7 +261,11 @@ def read_csv_required(path: Path, required: set[str]) -> list[dict[str, str]]:
 def validate_corrected_outputs(ue_path: Path, window_path: Path,
                                expected_run: int, expected_ues: int,
                                radius_m: float,
-                               application_mode: str = "udp") -> dict[str, float]:
+                               application_mode: str = "udp",
+                               channel_scenario: str = "UMa",
+                               channel_condition: str = "Default",
+                               channel_model: str = "ThreeGpp",
+                               shadowing_enabled: bool = True) -> dict[str, float]:
     ue_rows = read_csv_required(ue_path, {
         "rng_run", "application_mode", "ue_id", "x_initial_m", "y_initial_m", "z_initial_m",
         "distance_gnb_m", "app_throughput_traffic_mbps",
@@ -255,6 +274,8 @@ def validate_corrected_outputs(ue_path: Path, window_path: Path,
         "flowmon_rx_packets", "app_duplicate_packets", "app_malformed_packets",
         "cqi_mean", "cqi_samples", "mcs_mean", "rank_mean",
         "rsrp_mean_dbm", "rsrq_mean_db", "measurement_samples",
+        "rb_per_rbg", "channel_scenario", "channel_condition",
+        "channel_model", "shadowing_enabled",
         "app_throughput_traffic_aggregate_mbps",
         "app_goodput_total_aggregate_mbps",
         "flowmon_throughput_aggregate_mbps",
@@ -269,6 +290,15 @@ def validate_corrected_outputs(ue_path: Path, window_path: Path,
             raise RuntimeError("rng_run divergente no ue_summary")
         if row["application_mode"] != application_mode:
             raise RuntimeError("application_mode divergente no ue_summary")
+        expected_channel = (channel_scenario, channel_condition, channel_model)
+        actual_channel = (row["channel_scenario"], row["channel_condition"],
+                          row["channel_model"])
+        if actual_channel != expected_channel:
+            raise RuntimeError("configuração de canal divergente no ue_summary")
+        if row["shadowing_enabled"].lower() != str(shadowing_enabled).lower():
+            raise RuntimeError("shadowing divergente no ue_summary")
+        if int(row["rb_per_rbg"]) <= 0:
+            raise RuntimeError("rb_per_rbg deve ser positivo")
         x, y, z = (float(row[name]) for name in
                    ("x_initial_m", "y_initial_m", "z_initial_m"))
         radius = math.hypot(x, y)
@@ -335,6 +365,11 @@ def validate_corrected_outputs(ue_path: Path, window_path: Path,
         "rank_mean": mean_or_nan(cqi_rows, "rank_mean"),
         "rsrp_mean_dbm": mean_or_nan(measurement_rows, "rsrp_mean_dbm"),
         "rsrq_mean_db": mean_or_nan(measurement_rows, "rsrq_mean_db"),
+        "channel_scenario": channel_scenario,
+        "channel_condition": channel_condition,
+        "channel_model": channel_model,
+        "shadowing_enabled": str(shadowing_enabled).lower(),
+        "rb_per_rbg": int(ue_rows[0]["rb_per_rbg"]),
     }
 
 
@@ -374,6 +409,10 @@ def run_one(args: argparse.Namespace, scenario: Scenario, scheduler: str,
         f"--centralFrequency={args.central_frequency}",
         f"--totalTxPower={args.tx_power_dbm}",
         f"--numerology={args.numerology}",
+        f"--channelScenario={args.channel_scenario}",
+        f"--channelCondition={args.channel_condition}",
+        f"--channelModel={args.channel_model}",
+        f"--enableShadowing={'true' if args.enable_shadowing else 'false'}",
         f"--lambdaOverride={args.lambda_pps}",
         "--EnableConsoleDetails=false", "--EnableWindowCsv=true",
         f"--WindowSizeMs={args.window_ms}", f"--WindowCsvPath={window}",
@@ -396,6 +435,10 @@ def run_one(args: argparse.Namespace, scenario: Scenario, scheduler: str,
         "central_frequency_hz": args.central_frequency,
         "tx_power_dbm": args.tx_power_dbm,
         "numerology": args.numerology,
+        "channel_scenario": args.channel_scenario,
+        "channel_condition": args.channel_condition,
+        "channel_model": args.channel_model,
+        "shadowing_enabled": args.enable_shadowing,
         "packet_size_bytes": 1500,
         "lambda_pps": args.lambda_pps,
         "offered_load_mbps": udp_offered_load_mbps(scenario, args.lambda_pps),
@@ -429,6 +472,11 @@ def run_one(args: argparse.Namespace, scenario: Scenario, scheduler: str,
         "total_stop_s": args.sim_time + args.drain_time,
         "flow_max_per_hop_delay_s": args.flow_max_per_hop_delay,
         "window_ms": args.window_ms, "scheduler": scheduler,
+        "channel_scenario": args.channel_scenario,
+        "channel_condition": args.channel_condition,
+        "channel_model": args.channel_model,
+        "shadowing_enabled": str(args.enable_shadowing).lower(),
+        "rb_per_rbg": "",
         "seed": args.seed, "rng_run": rng_run,
         "app_throughput_traffic_mbps": "", "app_goodput_total_mbps": "",
         "app_jain_traffic": "", "app_jain_total": "",
@@ -452,7 +500,8 @@ def run_one(args: argparse.Namespace, scenario: Scenario, scheduler: str,
             raise RuntimeError("rng_run divergente na linha [RESULT]")
         metrics = validate_corrected_outputs(
             ue, window, rng_run, scenario.ue_count, scenario.radius_m,
-            scenario.application_mode)
+            scenario.application_mode, args.channel_scenario,
+            args.channel_condition, args.channel_model, args.enable_shadowing)
         if abs(float(match.group(1)) - metrics["app_throughput_traffic_mbps"]) > 1e-3:
             raise RuntimeError("throughput da linha [RESULT] diverge do ue_summary")
         if abs(float(match.group(2)) - metrics["app_jain_traffic"]) > 1e-5:
@@ -577,6 +626,18 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--central-frequency", type=float, default=4e9)
     parser.add_argument("--tx-power-dbm", type=float, default=43.0)
     parser.add_argument("--numerology", type=int, default=1)
+    parser.add_argument("--channel-scenario", choices=("UMa", "UMi", "RMa", "InH"),
+                        default="UMa")
+    parser.add_argument("--channel-condition",
+                        choices=("Default", "LOS", "NLOS", "Buildings"),
+                        default="Default")
+    parser.add_argument("--channel-model",
+                        choices=("ThreeGpp", "NYU", "TwoRay"),
+                        default="ThreeGpp")
+    parser.add_argument("--disable-shadowing", dest="enable_shadowing",
+                        action="store_false",
+                        help="Desativa shadowing no modelo de perda de percurso.")
+    parser.set_defaults(enable_shadowing=True)
     parser.add_argument(
         "--lambda-pps", type=int, default=DEFAULT_LAMBDA_PPS,
         help="Taxa por UE. 500 pps com pacotes de 1500 bytes equivale a 6 Mbps/UE."
@@ -627,7 +688,10 @@ def main() -> int:
     args = parse_args()
     args.output.mkdir(parents=True, exist_ok=True)
     ledger = args.output / "executions.csv"
-    for scenario in scenarios(args.ue_count, args.radius_m, args.application_modes):
+    for scenario in scenarios(
+            args.ue_count, args.radius_m, args.application_modes,
+            args.channel_scenario, args.channel_condition,
+            args.channel_model, args.enable_shadowing):
         while True:
             rows = read_rows(ledger)
             if converged(rows, scenario, args):

@@ -30,6 +30,8 @@ class BateriaTest4Tests(unittest.TestCase):
             "app_malformed_packets",
             "cqi_mean", "cqi_samples", "mcs_mean", "rank_mean",
             "rsrp_mean_dbm", "rsrq_mean_db", "measurement_samples",
+            "rb_per_rbg", "channel_scenario", "channel_condition",
+            "channel_model", "shadowing_enabled",
             "app_throughput_traffic_aggregate_mbps",
             "app_goodput_total_aggregate_mbps",
             "flowmon_throughput_aggregate_mbps",
@@ -58,6 +60,9 @@ class BateriaTest4Tests(unittest.TestCase):
                     "rsrp_mean_dbm": -85 if radio_samples else "nan",
                     "rsrq_mean_db": -10 if radio_samples else "nan",
                     "measurement_samples": 15 if radio_samples else 0,
+                    "rb_per_rbg": 1, "channel_scenario": "UMa",
+                    "channel_condition": "Default",
+                    "channel_model": "ThreeGpp", "shadowing_enabled": "true",
                     "app_throughput_traffic_aggregate_mbps": 2.0,
                     "app_goodput_total_aggregate_mbps": 2.4,
                     "flowmon_throughput_aggregate_mbps": 2.46,
@@ -115,6 +120,13 @@ class BateriaTest4Tests(unittest.TestCase):
             self.assertTrue(math.isnan(metrics["cqi_mean"]))
             self.assertTrue(math.isnan(metrics["rsrp_mean_dbm"]))
 
+    def test_channel_configuration_is_audited(self):
+        with tempfile.TemporaryDirectory() as directory:
+            ue, window = self.write_fixture(Path(directory))
+            with self.assertRaisesRegex(RuntimeError, "canal divergente"):
+                MODULE.validate_corrected_outputs(
+                    ue, window, 1, 2, 100, channel_scenario="UMi")
+
     def test_duplicate_application_packets_are_rejected(self):
         with tempfile.TemporaryDirectory() as directory:
             ue, window = self.write_fixture(Path(directory), duplicate=1)
@@ -153,6 +165,13 @@ class BateriaTest4Tests(unittest.TestCase):
         self.assertEqual([item.application_mode for item in scenarios],
                          ["udp", "http", "mixed"])
         self.assertEqual(len({item.name for item in scenarios}), 3)
+
+    def test_channel_configuration_changes_scenario_identity(self):
+        uma = MODULE.scenarios(50, 500, ("udp",), "UMa")[0]
+        umi = MODULE.scenarios(50, 500, ("udp",), "UMi")[0]
+        no_shadowing = MODULE.scenarios(
+            50, 500, ("udp",), "UMa", shadowing_enabled=False)[0]
+        self.assertEqual(len({uma.name, umi.name, no_shadowing.name}), 3)
 
 
 if __name__ == "__main__":
