@@ -1355,7 +1355,7 @@ main(int argc, char* argv[])
               << "flowmon_throughput_mbps,flowmon_delay_mean_ms,"
               << "flowmon_delay_p99_ms,flowmon_pdr_pct,"
               << "flowmon_undelivered_at_stop_packets,flowmon_tx_packets,"
-              << "flowmon_rx_packets,sinr_mean_db,sinr_samples,"
+              << "flowmon_rx_packets,flowmon_observed_downlink_flows,sinr_mean_db,sinr_samples,"
               << "cqi_mean,cqi_samples,mcs_recommended_mean,rank_mean,"
               << "rsrp_mean_dbm,rsrq_mean_db,rsrq_available,"
               << "measurement_samples,distance_gnb_m,"
@@ -1510,6 +1510,7 @@ main(int argc, char* argv[])
                   << r.undeliveredAtStopPackets << ","
                   << r.txPackets << ","
                   << r.rxPackets << ","
+                  << r.fluxosObservados << ","
                   << std::setprecision(3)
                   << sinrDb << ","
                   << (sinrIt != g_sinrAcumulado.end() ? sinrIt->second.second : 0) << ","

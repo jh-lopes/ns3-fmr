@@ -278,7 +278,8 @@ def validate_corrected_outputs(ue_path: Path, window_path: Path,
         "distance_gnb_m", "app_throughput_traffic_mbps",
         "app_goodput_total_mbps", "app_jain_traffic", "app_jain_total",
         "flowmon_throughput_mbps", "flowmon_jain", "app_rx_packets_total",
-        "flowmon_rx_packets", "app_duplicate_packets", "app_malformed_packets",
+        "flowmon_rx_packets", "flowmon_observed_downlink_flows",
+        "app_duplicate_packets", "app_malformed_packets",
         "cqi_mean", "cqi_samples", "mcs_recommended_mean", "rank_mean",
         "rsrp_mean_dbm", "rsrq_mean_db", "rsrq_available", "measurement_samples",
         "rb_per_rbg", "channel_scenario", "channel_condition",
@@ -320,6 +321,9 @@ def validate_corrected_outputs(ue_path: Path, window_path: Path,
             raise RuntimeError(f"UE {row['ue_id']} recebeu duplicatas na aplicação")
         if int(row["app_malformed_packets"]) != 0:
             raise RuntimeError(f"UE {row['ue_id']} recebeu pacote sem SeqTsHeader")
+        if (application_mode == "udp" and
+                int(row["flowmon_observed_downlink_flows"]) != expected_flows_per_ue):
+            raise RuntimeError(f"UE {row['ue_id']} sem todos os fluxos UDP no FlowMonitor")
 
     windows = read_csv_required(window_path, {
         "rng_run", "flows_per_ue", "window_id", "start_time_s", "end_time_s", "duration_s",
