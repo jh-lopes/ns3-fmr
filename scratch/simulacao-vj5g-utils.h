@@ -491,9 +491,12 @@ RxWindowCallback(uint32_t ueIdx, uint32_t flowIdx, Ptr<const Packet> packet)
 // O modelo HTTP 3GPP usa TCP e não carrega SeqTsHeader. Nesse caso, o trace
 // Rx do cliente representa bytes já entregues à aplicação (retransmissões TCP
 // não aparecem novamente), mas não permite reconstruir atraso/PDR por objeto.
+// O trace ThreeGppHttpClient::Rx fornece o pacote e o endereço de origem;
+// ueIdx é o único argumento fixado por MakeBoundCallback.
 inline void
-RxHttpCallback(uint32_t ueIdx, Ptr<const Packet> packet)
+RxHttpCallback(uint32_t ueIdx, Ptr<const Packet> packet, const Address& from)
 {
+    (void)from;
     if (ueIdx >= g_bytesRecebidosPorUe.size())
     {
         return;

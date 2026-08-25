@@ -946,8 +946,13 @@ main(int argc, char* argv[])
         {
             ThreeGppHttpClientHelper httpClient(remoteHostIpv4Address);
             ApplicationContainer httpApp = httpClient.Install(ueNodes.Get(ueIdx));
+            // A tipagem explícita torna incompatibilidades com o trace Rx um
+            // erro de compilação: depois de fixar ueIdx, o callback deve
+            // receber exatamente (Ptr<const Packet>, const Address&).
+            Callback<void, Ptr<const Packet>, const Address&> httpRxCallback =
+                MakeBoundCallback(&RxHttpCallback, ueIdx);
             httpApp.Get(0)->TraceConnectWithoutContext(
-                "Rx", MakeBoundCallback(&RxHttpCallback, ueIdx));
+                "Rx", httpRxCallback);
             clientApps.Add(httpApp);
         }
 
