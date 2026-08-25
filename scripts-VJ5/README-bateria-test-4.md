@@ -123,7 +123,9 @@ Para entrega eventual após o drain, use:
 As colunas `flowmon_*` são mantidas como instrumento de reconciliação e não
 como fonte principal da análise.
 
-Valores de rádio ausentes são exportados como `nan`, nunca como zero. As
+Valores de rádio ausentes são exportados como `nan`, nunca como zero. RSRQ é
+uma exceção deliberada: quando todas as amostras do trace forem zero, o campo
+`rsrq_mean_db` fica vazio e `rsrq_available=false`. As
 colunas `cqi_samples` e `measurement_samples` permitem distinguir ausência de
 trace de uma medição física igual a zero; o ledger informa quantos UEs tiveram
 cada família de medida.
@@ -134,3 +136,11 @@ aplicação e igualdade da quantidade de pacotes com o FlowMonitor são critéri
 exclusivos do modo UDP. Vazão, Jain e janelas da fase `traffic` continuam sendo
 medidos na aplicação em todos os modos; métricas de entrega após `drain` só
 devem ser interpretadas para os fluxos UDP.
+
+## Unidade do log de escalonamento
+
+No `slot_log_common.csv`, `allocated_rbg_symbol_units` é o tamanho de
+`m_dlRBG`. Como `m_dlRBG` e `m_dlSym` são vetores paralelos, cada entrada
+representa um par `(RBG, símbolo OFDM)`, não um RBG de frequência único. Os
+agregados usam, portanto, `rbg_symbol_units_total` e
+`rb_symbol_units_total`; eles não devem ser descritos como “RBs recebidos”.

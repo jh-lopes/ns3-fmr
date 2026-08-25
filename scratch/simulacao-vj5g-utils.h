@@ -201,6 +201,7 @@ struct AcumuladorRadioUe
     double rsrpSomaDbm = 0.0;
     double rsrqSomaDb = 0.0;
     uint64_t medidasAmostras = 0;
+    uint64_t rsrqNaoZeroAmostras = 0;
 };
 
 inline std::map<uint32_t, AcumuladorRadioUe> g_radioAcumulado;
@@ -354,6 +355,10 @@ UeMeasurementsCallback(uint32_t ueIdx,
     acumulador.rsrpSomaDbm += rsrp;
     acumulador.rsrqSomaDb += rsrq;
     ++acumulador.medidasAmostras;
+    if (std::abs(rsrq) > 1e-12)
+    {
+        ++acumulador.rsrqNaoZeroAmostras;
+    }
     g_ueIdxParaRnti[ueIdx] = rnti;
 }
 

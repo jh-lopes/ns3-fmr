@@ -2,12 +2,12 @@
 # ============================================================
 # computar_rbg_por_ue.py
 #
-# Adiciona ao ue_summary.csv as colunas de RBG alocado por UE,
+# Adiciona ao ue_summary.csv unidades RBG×símbolo alocadas por UE,
 # cruzando com o log nativo do 5G-LENA slot_log_common.csv
 # (--EnableCommonSlotCsv), que registra, POR SLOT, quantas unidades
 # de recurso tempo-frequência (RBG × símbolo OFDM) cada UE recebeu
-# (colunas: time_s,beam_id,rnti,dl_mcs,buf_req,alloc_rbg — ver nota
-# "IMPORTANTE" abaixo pra semântica exata de alloc_rbg, corrigida em
+# (colunas: time_s,beam_id,rnti,dl_mcs,buf_req,allocated_rbg_symbol_units — ver nota
+# "IMPORTANTE" abaixo pra semântica exata de allocated_rbg_symbol_units, corrigida em
 # 13/ago/2026). Ver comentário no simulacao-vj5g.cc, linhas ~144-151.
 #
 # Por que precisa deste script (e não só olhar o CSV nativo direto):
@@ -19,17 +19,17 @@
 #     simulação (SinrCallback + MakeBoundCallback). Este script usa
 #     essa coluna pra fazer o cruzamento certo, sem adivinhar nada.
 #
-# IMPORTANTE — o que a coluna alloc_rbg REALMENTE significa (corrigido
+# IMPORTANTE — o que a coluna allocated_rbg_symbol_units REALMENTE significa (corrigido
 # em 13/ago/2026, ver conversa no projeto "Simulação Dissertação"):
 #
 #   Uma explicação anterior deste comentário dizia que só existiriam
 #   ~12 RBGs por slot pra dividir entre os UEs (RBG size=2 num canal de
-#   24 RBs), e que por isso a maioria dos UEs receberia alloc_rbg=0 na
+#   24 RBs), e que por isso a maioria dos UEs receberia allocated_rbg_symbol_units=0 na
 #   maioria dos slots. Essa explicação estava ERRADA — os dados reais
-#   mostram alloc_rbg variando de 0 a >300, o que não bate com um teto
+#   mostram allocated_rbg_symbol_units variando de 0 a >300, o que não bate com um teto
 #   de 12.
 #
-#   A causa: alloc_rbg não conta RBGs na dimensão da frequência apenas.
+#   A causa: allocated_rbg_symbol_units não conta RBGs na dimensão da frequência apenas.
 #   No código-fonte do 5G-LENA (nr-mac-scheduler-ofdma.cc, função
 #   WriteCommonSlotCsv, e nr-mac-scheduler-ue-info.h), a coluna é escrita
 #   assim:
@@ -39,11 +39,11 @@
 #       std::vector<uint8_t>  m_dlSym;  // símbolo OFDM correspondente
 #                                        // de cada m_dlRBG neste slot
 #   m_dlRBG e m_dlSym são vetores PARALELOS: cada posição i é um par
-#   (RBG, símbolo OFDM). Ou seja, alloc_rbg conta unidades de recurso
+#   (RBG, símbolo OFDM). Ou seja, allocated_rbg_symbol_units conta unidades de recurso
 #   TEMPO-FREQUÊNCIA (RBG × símbolo), não RBGs distintos na frequência.
 #
 #   Isso explica os números observados num teste real com 10 UEs, PF,
-#   10MHz: a soma de alloc_rbg de todos os UEs, em CADA slot, é sempre
+#   10MHz: a soma de allocated_rbg_symbol_units de todos os UEs, em CADA slot, é sempre
 #   exatamente 338 — porque a grade de dados do slot inteiro (26 RBGs
 #   × 13 símbolos de dados, já que 1 dos 14 símbolos fica reservado pra
 #   controle/PDCCH) é sempre alocada por completo sob tráfego saturante
@@ -52,7 +52,7 @@
 #   baixo) recebem mais unidades, porque precisam de mais recursos
 #   tempo-frequência pra carregar a mesma quantidade de bytes.
 #
-#   Em resumo: alloc_rbg/rbg_total_alocados abaixo devem ser lidos como
+#   Em resumo: allocated_rbg_symbol_units/rbg_symbol_units_total abaixo devem ser lidos como
 #   "unidades RBG×símbolo alocadas", não como "quantidade de RBGs". A
 #   comparação relativa entre UEs (quem recebeu mais/menos) continua
 #   válida e é o que importa pra análise de justiça — só a unidade de
@@ -82,6 +82,20 @@ except ImportError:
     print("  pip install pandas --break-system-packages")
     sys.exit(1)
 
+RESOURCE_COLUMN = "allocated_rbg_symbol_units"
+
+
+def normalizar_coluna_recurso(slot_log):
+    """Aceita logs antigos, mas usa internamente o nome cientificamente correto."""
+    if RESOURCE_COLUMN in slot_log.columns:
+        return slot_log
+    if "alloc_rbg" in slot_log.columns:
+        print("[rbg] AVISO: log legado com 'alloc_rbg'; interpretando a coluna "
+              "como unidades RBG×símbolo.")
+        return slot_log.rename(columns={"alloc_rbg": RESOURCE_COLUMN})
+    raise ValueError(
+        f"slot_log sem a coluna obrigatória '{RESOURCE_COLUMN}'")
+
 
 def computar(ue_summary_path: Path, slot_log_path: Path, saida_path: Path) -> None:
     if not ue_summary_path.exists():
@@ -94,7 +108,7 @@ def computar(ue_summary_path: Path, slot_log_path: Path, saida_path: Path) -> No
         raise SystemExit(1)
 
     ue_summary = pd.read_csv(ue_summary_path)
-    slot_log = pd.read_csv(slot_log_path)
+    slot_log = normalizar_coluna_recurso(pd.read_csv(slot_log_path))
 
     if "rnti" not in ue_summary.columns:
         print("[rbg] ERRO: ue_summary.csv não tem a coluna 'rnti'. "
@@ -105,45 +119,45 @@ def computar(ue_summary_path: Path, slot_log_path: Path, saida_path: Path) -> No
 
     # --- Agrega o log nativo por RNTI ---
     agregado = slot_log.groupby("rnti").agg(
-        linhas_no_log=("alloc_rbg", "size"),
-        rbg_total_alocados=("alloc_rbg", "sum"),
-        slots_com_alocacao=("alloc_rbg", lambda s: (s > 0).sum()),
+        logged_events=("allocated_rbg_symbol_units", "size"),
+        rbg_symbol_units_total=("allocated_rbg_symbol_units", "sum"),
+        scheduled_events=("allocated_rbg_symbol_units", lambda s: (s > 0).sum()),
     ).reset_index()
 
     # Média de unidades RBG×símbolo só nos slots em que o UE de fato
     # recebeu algo (>0) — evita diluir a média com os zeros, que já são
-    # capturados por pct_slots_com_alocacao separadamente.
-    agregado["rbg_medio_quando_alocado"] = (
-        agregado["rbg_total_alocados"] / agregado["slots_com_alocacao"].replace(0, pd.NA)
+    # capturados por scheduled_event_share_pct separadamente.
+    agregado["rbg_symbol_units_mean_when_scheduled"] = (
+        agregado["rbg_symbol_units_total"] / agregado["scheduled_events"].replace(0, pd.NA)
     ).round(3)
 
     # Fração das linhas do log (por RNTI) em que o UE recebeu RBG > 0.
     # NOTA: isso é "fração das vezes que o UE aparece no log", não
     # necessariamente "fração de TODOS os slots da simulação" — depende
     # de o log nativo escrever uma linha por UE em TODO slot (mesmo com
-    # alloc_rbg=0) ou só quando o UE é considerado pelo scheduler. Se
-    # "linhas_no_log" for igual pra todos os UEs de uma rodada, é sinal
+    # allocated_rbg_symbol_units=0) ou só quando o UE é considerado pelo scheduler. Se
+    # "logged_events" for igual pra todos os UEs de uma rodada, é sinal
     # de que o log cobre todo slot uniformemente e esse percentual já
     # representa a simulação inteira; se variar entre UEs, represente
     # com essa ressalva.
-    agregado["pct_slots_com_alocacao"] = (
-        agregado["slots_com_alocacao"] / agregado["linhas_no_log"] * 100
+    agregado["scheduled_event_share_pct"] = (
+        agregado["scheduled_events"] / agregado["logged_events"] * 100
     ).round(2)
 
     # --- Junta com o ue_summary por RNTI ---
     # BUG corrigido em 13/ago/2026: se o ue_summary.csv informado já tiver
     # sido processado por este script antes (já tem estas colunas de uma
-    # rodada anterior), o merge() duplicava as colunas (ex: "linhas_no_log_x"
-    # e "linhas_no_log_y") em vez de sobrescrever — quebrando o script logo
+    # rodada anterior), o merge() duplicava as colunas (ex: "logged_events_x"
+    # e "logged_events_y") em vez de sobrescrever — quebrando o script logo
     # em seguida com KeyError. Isso tornava o script NÃO IDEMPOTENTE: rodar
     # duas vezes em cima do mesmo arquivo sempre falhava. Corrigido
     # removendo, antes do merge, qualquer coluna de rodada anterior que já
     # exista no ue_summary — assim o resultado sempre reflete o slot_log
     # informado NESTA chamada, e rodar o script de novo (ex: depois de um
     # rebuild) simplesmente atualiza os valores em vez de quebrar.
-    novas_colunas = ["linhas_no_log", "rbg_total_alocados",
-                      "slots_com_alocacao", "rbg_medio_quando_alocado",
-                      "pct_slots_com_alocacao"]
+    novas_colunas = ["logged_events", "rbg_symbol_units_total",
+                      "scheduled_events", "rbg_symbol_units_mean_when_scheduled",
+                      "scheduled_event_share_pct", "rb_symbol_units_total"]
     colunas_ja_existentes = [c for c in novas_colunas if c in ue_summary.columns]
     if colunas_ja_existentes:
         print(f"[rbg] AVISO: {ue_summary_path} já tinha as colunas "
@@ -153,8 +167,17 @@ def computar(ue_summary_path: Path, slot_log_path: Path, saida_path: Path) -> No
         ue_summary = ue_summary.drop(columns=colunas_ja_existentes)
 
     resultado = ue_summary.merge(agregado, on="rnti", how="left")
+    if "rb_per_rbg" in resultado.columns:
+        resultado["rb_symbol_units_total"] = (
+            resultado["rbg_symbol_units_total"] * resultado["rb_per_rbg"])
+    else:
+        resultado["rb_symbol_units_total"] = pd.NA
 
-    sem_correspondencia = resultado[resultado["linhas_no_log"].isna()]
+    for column in ("logged_events", "rbg_symbol_units_total",
+                   "scheduled_events", "rb_symbol_units_total"):
+        resultado[column] = resultado[column].round().astype("Int64")
+
+    sem_correspondencia = resultado[resultado["logged_events"].isna()]
     if not sem_correspondencia.empty:
         print(f"[rbg] AVISO: {len(sem_correspondencia)} UE(s) do ue_summary.csv "
               "não têm nenhuma linha correspondente em slot_log_common.csv "
@@ -178,14 +201,14 @@ def gerar_detalhe_por_slot(ue_summary_path: Path, slot_log_path: Path,
     uma linha por (UE, slot), com slot numerado sequencialmente (1, 2, 3...)
     em vez do time_s bruto, e ue_id (não RNTI) — junto com o que o
     scheduler decidiu naquele slot para aquele UE (dl_mcs, buf_req,
-    alloc_rbg) e os metadados do cenário (scheduler, dispositivos, etc,
+    allocated_rbg_symbol_units) e os metadados do cenário (scheduler, dispositivos, etc,
     repetidos em toda linha pra facilitar filtro/pivot depois).
 
     Também calcula, por slot, o Jain-alocação REAL daquele instante
-    (colunas n_ues_no_slot e jain_alocacao_slot) — diferente de jain_vazao
+    (colunas n_ues_no_slot e jain_rbg_symbol_units_slot) — diferente de jain_vazao
     (vindo do ue_summary.csv), que é um valor ÚNICO pra simulação inteira e
-    por isso aparece repetido em toda linha do arquivo. jain_alocacao_slot
-    mede a justiça da divisão de alloc_rbg entre os UEs presentes NAQUELE
+    por isso aparece repetido em toda linha do arquivo. jain_rbg_symbol_units_slot
+    mede a justiça da divisão de allocated_rbg_symbol_units entre os UEs presentes NAQUELE
     slot específico, então varia slot a slot (ver comentário no código, na
     função _jain, para a fórmula). Slots UL (sem nenhuma linha no log
     nativo) não têm Jain calculado, porque não aparecem no arquivo.
@@ -204,7 +227,7 @@ def gerar_detalhe_por_slot(ue_summary_path: Path, slot_log_path: Path,
         raise SystemExit(1)
 
     ue_summary = pd.read_csv(ue_summary_path)
-    slot_log = pd.read_csv(slot_log_path)
+    slot_log = normalizar_coluna_recurso(pd.read_csv(slot_log_path))
 
     if "rnti" not in ue_summary.columns:
         print("[rbg] ERRO: ue_summary.csv não tem a coluna 'rnti'. "
@@ -227,7 +250,7 @@ def gerar_detalhe_por_slot(ue_summary_path: Path, slot_log_path: Path,
     # jain_vazao (herdado do ue_summary.csv) é UM valor só, calculado sobre
     # a simulação inteira — por isso é idêntico em toda linha do arquivo.
     # Aqui calculamos um Jain de verdade PARA CADA SLOT, sobre os valores de
-    # alloc_rbg que os UEs efetivamente receberam NAQUELE slot específico —
+    # allocated_rbg_symbol_units que os UEs efetivamente receberam NAQUELE slot específico —
     # ou seja, mede a justiça da alocação instantânea, não da simulação
     # inteira. Fórmula padrão de Jain sobre o vetor x de alocações no slot:
     #   J = (sum(x))^2 / (n * sum(x^2))
@@ -246,8 +269,8 @@ def gerar_detalhe_por_slot(ue_summary_path: Path, slot_log_path: Path,
         return (soma ** 2) / (n * soma_quadrados)
 
     jain_por_slot = (
-        slot_log.groupby("slot")["alloc_rbg"]
-        .agg(jain_alocacao_slot=_jain, n_ues_no_slot="size")
+        slot_log.groupby("slot")["allocated_rbg_symbol_units"]
+        .agg(jain_rbg_symbol_units_slot=_jain, n_ues_no_slot="size")
         .reset_index()
     )
     slot_log = slot_log.merge(jain_por_slot, on="slot", how="left")
@@ -273,8 +296,8 @@ def gerar_detalhe_por_slot(ue_summary_path: Path, slot_log_path: Path,
               "dispositivo não rastreado. Mantidas no arquivo com ue_id vazio.")
 
     colunas_finais = (["slot", "ue_id", "rnti"] + colunas_metadados +
-                       ["time_s", "beam_id", "dl_mcs", "buf_req", "alloc_rbg",
-                        "n_ues_no_slot", "jain_alocacao_slot"])
+                       ["time_s", "beam_id", "dl_mcs", "buf_req", "allocated_rbg_symbol_units",
+                        "n_ues_no_slot", "jain_rbg_symbol_units_slot"])
     colunas_finais = [c for c in colunas_finais if c in detalhe.columns]
     detalhe = detalhe[colunas_finais].sort_values(["slot", "ue_id"])
 
@@ -284,8 +307,8 @@ def gerar_detalhe_por_slot(ue_summary_path: Path, slot_log_path: Path,
     n_ues = mapa_ue["ue_id"].nunique()
     print(f"\n[rbg] Detalhe por slot salvo em: {saida_path}")
     print(f"[rbg] {n_slots} slots × {n_ues} UEs = {len(detalhe)} linhas")
-    if "jain_alocacao_slot" in detalhe.columns:
-        jain_slot_unico = detalhe.drop_duplicates("slot")["jain_alocacao_slot"]
+    if "jain_rbg_symbol_units_slot" in detalhe.columns:
+        jain_slot_unico = detalhe.drop_duplicates("slot")["jain_rbg_symbol_units_slot"]
         print(f"\n[rbg] Jain-por-slot (justiça da alocação instantânea, não da "
               f"simulação inteira): média={jain_slot_unico.mean():.4f}, "
               f"mín={jain_slot_unico.min():.4f}, máx={jain_slot_unico.max():.4f}")
@@ -295,7 +318,7 @@ def gerar_detalhe_por_slot(ue_summary_path: Path, slot_log_path: Path,
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Adiciona colunas de RBG por UE ao ue_summary.csv, "
+        description="Adiciona unidades RBG×símbolo por UE ao ue_summary.csv, "
                      "cruzando com o log nativo slot_log_common.csv. "
                      "Com --detalhe-por-slot, gera também (ou em vez disso) "
                      "um CSV slot a slot.")

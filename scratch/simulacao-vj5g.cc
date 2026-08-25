@@ -1329,8 +1329,9 @@ main(int argc, char* argv[])
               << "flowmon_delay_p99_ms,flowmon_pdr_pct,"
               << "flowmon_undelivered_at_stop_packets,flowmon_tx_packets,"
               << "flowmon_rx_packets,sinr_mean_db,sinr_samples,"
-              << "cqi_mean,cqi_samples,mcs_mean,rank_mean,"
-              << "rsrp_mean_dbm,rsrq_mean_db,measurement_samples,distance_gnb_m,"
+              << "cqi_mean,cqi_samples,mcs_recommended_mean,rank_mean,"
+              << "rsrp_mean_dbm,rsrq_mean_db,rsrq_available,"
+              << "measurement_samples,distance_gnb_m,"
               << "app_jain_traffic,app_jain_total,flowmon_jain,"
               << "app_throughput_traffic_aggregate_mbps,"
               << "app_goodput_total_aggregate_mbps,"
@@ -1384,6 +1385,8 @@ main(int argc, char* argv[])
                             radioIt->second.cqiAmostras > 0;
         const bool hasMeasurements = radioIt != g_radioAcumulado.end() &&
                                      radioIt->second.medidasAmostras > 0;
+        const bool hasRsrq = hasMeasurements &&
+                             radioIt->second.rsrqNaoZeroAmostras > 0;
         const double missingRadio = std::numeric_limits<double>::quiet_NaN();
         const double cqiMean = hasCqi
             ? radioIt->second.cqiSoma / radioIt->second.cqiAmostras : missingRadio;
@@ -1393,10 +1396,22 @@ main(int argc, char* argv[])
             ? radioIt->second.rankSoma / radioIt->second.cqiAmostras : missingRadio;
         const double rsrpMeanDbm = hasMeasurements
             ? radioIt->second.rsrpSomaDbm / radioIt->second.medidasAmostras : missingRadio;
-        const double rsrqMeanDb = hasMeasurements
+        const double rsrqMeanDb = hasRsrq
             ? radioIt->second.rsrqSomaDb / radioIt->second.medidasAmostras : missingRadio;
 
         double distM = i < distanciasUe.size() ? distanciasUe[i] : 0.0;
+        const double dz = posGnb.z - posicoesIniciaisUe[i].z;
+        const double staticMaxDistance =
+            std::sqrt(mobilityBounds * mobilityBounds + dz * dz) + 1.0;
+        NS_ABORT_MSG_IF(!std::isfinite(distM) || distM < 0.0,
+                        "distance_gnb_m inválida para UE " << i << ": " << distM);
+        NS_ABORT_MSG_IF(!enableMobility && positionMode == "random_disc_static" &&
+                            distM > staticMaxDistance,
+                        "distance_gnb_m excede o limite físico: " << distM);
+        NS_ABORT_MSG_IF(hasCqi && (cqiMean < 0.0 || cqiMean > 15.0),
+                        "CQI médio fora de [0,15] para UE " << i << ": " << cqiMean);
+        NS_ABORT_MSG_IF(hasCqi && (mcsMean < 0.0 || mcsMean > 28.0),
+                        "MCS médio fora de [0,28] para UE " << i << ": " << mcsMean);
 
         if (enableConsoleDetails)
         {
@@ -1430,15 +1445,18 @@ main(int argc, char* argv[])
                   << ueNumPergNb << ","
                   << seed << ","
                   << run << ","
+                  << std::setprecision(3)
                   << (bandwidth / 1e6) << ","
                   << (enableMobility ? mobilityModel : positionMode) << ","
                   << (enableMobility ? "true" : "false") << ","
                   << mobilityBounds << ","
                   << i << ","
                   << rntiReal << ","
+                  << std::setprecision(3)
                   << initialPosition.x << ","
                   << initialPosition.y << ","
                   << initialPosition.z << ","
+                  << std::setprecision(4)
                   << appTrafficThroughputPorUe[i] << ","
                   << appTotalGoodputPorUe[i] << ","
                   << app.trafficUniquePackets << ","
@@ -1447,28 +1465,43 @@ main(int argc, char* argv[])
                   << app.totalBytes << ","
                   << app.duplicatePackets << ","
                   << app.malformedPackets << ","
+                  << std::setprecision(3)
                   << appDelayMeanMs << ","
                   << appDelayP99Ms << ","
+                  << std::setprecision(4)
                   << appPdrTrafficPct << ","
                   << appPdrTotalPct << ","
                   << appUndeliveredAtStop << ","
+                  << std::setprecision(4)
                   << r.throughputMbps << ","
+                  << std::setprecision(3)
                   << delayMedioMs << ","
                   << r.delayP99Ms << ","
+                  << std::setprecision(4)
                   << flowmonPdrPct << ","
                   << r.undeliveredAtStopPackets << ","
                   << r.txPackets << ","
                   << r.rxPackets << ","
+                  << std::setprecision(3)
                   << sinrDb << ","
                   << (sinrIt != g_sinrAcumulado.end() ? sinrIt->second.second : 0) << ","
+                  << std::setprecision(2)
                   << cqiMean << ","
                   << (hasCqi ? radioIt->second.cqiAmostras : 0) << ","
                   << mcsMean << ","
                   << rankMean << ","
-                  << rsrpMeanDbm << ","
-                  << rsrqMeanDb << ","
+                  << std::setprecision(3)
+                  << rsrpMeanDbm << ",";
+            if (hasRsrq)
+            {
+                ueCsv << rsrqMeanDb;
+            }
+            ueCsv << ","
+                  << (hasRsrq ? "true" : "false") << ","
                   << (hasMeasurements ? radioIt->second.medidasAmostras : 0) << ","
+                  << std::setprecision(3)
                   << distM << ","
+                  << std::setprecision(4)
                   << appTrafficJain << ","
                   << appTotalJain << ","
                   << flowmonJain << ","
@@ -1477,6 +1510,7 @@ main(int argc, char* argv[])
                   << flowmonThroughputAgregado << ","
                   << perfil.pacoteBytes << ","
                   << perfil.lambda << ","
+                  << std::setprecision(3)
                   << udpAppStartTime.GetSeconds() << ","
                   << simTime.GetSeconds() << ","
                   << drainTime.GetSeconds() << ","

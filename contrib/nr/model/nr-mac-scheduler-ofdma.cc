@@ -102,7 +102,7 @@ NrMacSchedulerOfdma::WriteCommonSlotCsv(
 
     if (!m_commonSlotCsvHeaderWritten && !m_commonSlotCsvAppend)
     {
-        out << "time_s,beam_id,rnti,dl_mcs,buf_req,alloc_rbg\n";
+        out << "time_s,beam_id,rnti,dl_mcs,buf_req,allocated_rbg_symbol_units\n";
         m_commonSlotCsvHeaderWritten = true;
     }
 
@@ -111,7 +111,10 @@ NrMacSchedulerOfdma::WriteCommonSlotCsv(
     for (const auto& ue : ueVector)
     {
         const auto& ueInfo = ue.first;
-        const uint32_t alloc = static_cast<uint32_t>(ueInfo->m_dlRBG.size());
+        // m_dlRBG and m_dlSym are parallel vectors: each entry identifies
+        // one (RBG, OFDM symbol) allocation, not one unique frequency RBG.
+        const uint32_t allocatedRbgSymbolUnits =
+            static_cast<uint32_t>(ueInfo->m_dlRBG.size());
 
         out << std::fixed << std::setprecision(6)
             << now << ","
@@ -119,7 +122,7 @@ NrMacSchedulerOfdma::WriteCommonSlotCsv(
             << ueInfo->m_rnti << ","
             << static_cast<uint32_t>(ueInfo->m_dlMcs) << ","
             << ue.second << ","
-            << alloc << "\n";
+            << allocatedRbgSymbolUnits << "\n";
     }
 
     if (m_commonSlotCsvFlush)
