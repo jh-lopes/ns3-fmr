@@ -125,6 +125,17 @@ registrado para proveniência, mas não multiplica as sessões HTTP.
 a carga UDP como `UEs_UDP × fluxos/UE × lambda × 1500 × 8` e registra
 `flows_per_ue` no nome do cenário, metadados, ledger e CSVs do simulador.
 
+A implementação multifluxo reaproveita o padrão de
+`scratch/fmr-compara-qos.cc`: portas determinísticas por `(UE, fluxo)`, um TFT
+por UE com um filtro downlink para cada porta e um único bearer do perfil por
+UE. Isso evita que um TFT catch-all esconda erros de classificação.
+
+O modo `--dynamicTraffic=true`, também originado do FMR, agora é funcional no
+VJ5G: `phaseDurations` e `phaseLambdas` precisam ter o mesmo tamanho, valores
+positivos, e cada mudança de lambda é aplicada a todos os clientes UDP sem
+alterar a quantidade fixa de fluxos. Pode ser usado com `udp` ou `mixed`, mas
+não com `http` puro.
+
 ```bash
 python3 scripts-VJ5/bateria_test_4.py --application-modes udp,mixed \
   --flows-per-ue 3 --lambda-pps 500

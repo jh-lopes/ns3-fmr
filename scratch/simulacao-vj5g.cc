@@ -61,6 +61,7 @@
 #include "simulacao-vj5g-utils.h"
 
 #include <algorithm>
+#include <cctype>
 #include <cmath>
 #include <fstream>
 #include <iomanip>
@@ -76,6 +77,38 @@
 using namespace ns3;
 
 NS_LOG_COMPONENT_DEFINE("SimulacaoVJ5G");
+
+namespace
+{
+
+template <typename T, typename Converter>
+std::vector<T>
+ParseCsvValues(const std::string& text, Converter converter)
+{
+    std::vector<T> values;
+    std::stringstream stream(text);
+    std::string token;
+    while (std::getline(stream, token, ','))
+    {
+        token.erase(std::remove_if(token.begin(), token.end(), ::isspace), token.end());
+        if (!token.empty())
+        {
+            values.push_back(converter(token));
+        }
+    }
+    return values;
+}
+
+void
+SetUdpClientRate(Ptr<UdpClient> client, uint32_t lambdaPps)
+{
+    NS_ABORT_MSG_IF(!client || lambdaPps == 0,
+                    "Cliente UDP ou lambda inválido na fase dinâmica");
+    client->SetAttribute(
+        "Interval", TimeValue(Seconds(1.0 / static_cast<double>(lambdaPps))));
+}
+
+} // namespace
 
 // ============================================================
 // FUNÇÃO PRINCIPAL
@@ -336,11 +369,40 @@ main(int argc, char* argv[])
     // Marcador pesquisável com `strings` para distinguir este executável de
     // builds antigos que rejeitavam drainTime=0 e tinham callback HTTP incorreto.
     NS_LOG_UNCOND("[VJ5G] build_capabilities="
-                  "drain_zero,http_rx_address,classic_decimal");
+                  "drain_zero,http_rx_address,classic_decimal,"
+                  "explicit_dl_tft,dynamic_udp_phases");
+
+    std::vector<double> dynamicPhaseDurations;
+    std::vector<uint32_t> dynamicPhaseLambdas;
+    if (dynamicTraffic)
+    {
+        dynamicPhaseDurations = ParseCsvValues<double>(
+            phaseDurations, [](const std::string& value) { return std::stod(value); });
+        dynamicPhaseLambdas = ParseCsvValues<uint32_t>(
+            phaseLambdas, [](const std::string& value) {
+                return static_cast<uint32_t>(std::stoul(value));
+            });
+        NS_ABORT_MSG_IF(dynamicPhaseDurations.empty() ||
+                            dynamicPhaseDurations.size() != dynamicPhaseLambdas.size(),
+                        "phaseDurations e phaseLambdas devem ter o mesmo tamanho não vazio");
+        double trafficDuration = 0.0;
+        for (std::size_t phase = 0; phase < dynamicPhaseDurations.size(); ++phase)
+        {
+            NS_ABORT_MSG_IF(dynamicPhaseDurations[phase] <= 0.0 ||
+                                dynamicPhaseLambdas[phase] == 0,
+                            "Fases dinâmicas exigem duração e lambda positivos");
+            trafficDuration += dynamicPhaseDurations[phase];
+        }
+        // Mesmo contrato do fmr-compara-qos: as fases definem o término do
+        // tráfego, incluindo o instante de inicialização das aplicações.
+        simTime = udpAppStartTime + Seconds(trafficDuration);
+    }
 
     NS_ABORT_MSG_IF(applicationMode != "udp" && applicationMode != "http" &&
                         applicationMode != "mixed",
                     "applicationMode inválido. Use udp | http | mixed");
+    NS_ABORT_MSG_IF(dynamicTraffic && applicationMode == "http",
+                    "dynamicTraffic altera clientes UDP; use applicationMode=udp ou mixed");
 
     NS_ABORT_MSG_IF(simTime <= udpAppStartTime,
                     "simTime deve ser maior que o início das aplicações");
@@ -378,6 +440,10 @@ main(int argc, char* argv[])
         NS_LOG_UNCOND("[VJ5G] Lambda sobrescrito: "
                    << perfil.lambda << " → " << lambdaOverride << " pkt/s");
         perfil.lambda = lambdaOverride;
+    }
+    if (dynamicTraffic)
+    {
+        perfil.lambda = dynamicPhaseLambdas.front();
     }
     if (flowsPerUeOverride > 0)
     {
@@ -920,6 +986,7 @@ main(int argc, char* argv[])
     // UE0/fluxo0=1234, UE0/fluxo1=1235, UE1/fluxo0=1236, ...
     const uint16_t portBase = udpPortBase;
     std::vector<Ptr<UdpServer>> udpServers;
+    std::vector<Ptr<UdpClient>> udpClients;
 
     if (applicationMode == "http" || applicationMode == "mixed")
     {
@@ -936,6 +1003,10 @@ main(int argc, char* argv[])
 
         if (useUdp)
         {
+            // Reaproveita o padrão validado em fmr-compara-qos: um TFT por UE
+            // contendo um filtro para cada porta DL. Assim todos os fluxos do
+            // UE compartilham o bearer do perfil sem usar um TFT catch-all.
+            Ptr<NrEpcTft> ueTft = Create<NrEpcTft>();
             for (uint32_t flowIdx = 0; flowIdx < perfil.flowsPorUe; ++flowIdx)
             {
                 uint16_t port = portBase + static_cast<uint16_t>(
@@ -953,8 +1024,18 @@ main(int argc, char* argv[])
                     1.0 / static_cast<double>(perfil.lambda))));
                 clientHelper.SetAttribute("PacketSize", UintegerValue(perfil.pacoteBytes));
                 clientHelper.SetAttribute("MaxPackets", UintegerValue(0xFFFFFFFF));
-                clientApps.Add(clientHelper.Install(remoteHost));
+                ApplicationContainer udpClientApp = clientHelper.Install(remoteHost);
+                clientApps.Add(udpClientApp);
+                udpClients.push_back(DynamicCast<UdpClient>(udpClientApp.Get(0)));
+
+                NrEpcTft::PacketFilter filter;
+                filter.direction = NrEpcTft::DOWNLINK;
+                filter.localPortStart = port;
+                filter.localPortEnd = port;
+                ueTft->Add(filter);
             }
+            NrEpsBearer bearer(perfil.bearerQci);
+            nrHelper->ActivateDedicatedEpsBearer(ueDevs.Get(ueIdx), bearer, ueTft);
         }
         if (useHttp)
         {
@@ -968,11 +1049,31 @@ main(int argc, char* argv[])
             httpApp.Get(0)->TraceConnectWithoutContext(
                 "Rx", httpRxCallback);
             clientApps.Add(httpApp);
+            NrEpsBearer bearer(perfil.bearerQci);
+            nrHelper->ActivateDedicatedEpsBearer(
+                ueDevs.Get(ueIdx), bearer, NrEpcTft::Default());
         }
+    }
 
-        NrEpsBearer bearer(perfil.bearerQci);
-        nrHelper->ActivateDedicatedEpsBearer(
-            ueDevs.Get(ueIdx), bearer, NrEpcTft::Default());
+    if (dynamicTraffic)
+    {
+        Time phaseStart = udpAppStartTime;
+        for (std::size_t phase = 0; phase < dynamicPhaseDurations.size(); ++phase)
+        {
+            for (const auto& client : udpClients)
+            {
+                Simulator::Schedule(phaseStart,
+                                    &SetUdpClientRate,
+                                    client,
+                                    dynamicPhaseLambdas[phase]);
+            }
+            NS_LOG_UNCOND("[TRAFFIC] phase=" << phase
+                          << " start_s=" << phaseStart.GetSeconds()
+                          << " duration_s=" << dynamicPhaseDurations[phase]
+                          << " lambda_pps=" << dynamicPhaseLambdas[phase]
+                          << " udp_flows=" << udpClients.size());
+            phaseStart += Seconds(dynamicPhaseDurations[phase]);
+        }
     }
 
     // --- 5.3 Configurar tempos ---
