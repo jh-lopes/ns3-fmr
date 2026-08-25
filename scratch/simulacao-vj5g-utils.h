@@ -24,11 +24,13 @@
 #include "ns3/core-module.h"
 #include "ns3/nr-module.h"
 #include "ns3/histogram.h"
+#include "ns3/seq-ts-header.h"
 #include <chrono>
 #include <algorithm>
 #include <cmath>
 #include <fstream>
 #include <map>
+#include <set>
 #include <string>
 #include <utility>
 #include <vector>
@@ -338,11 +340,28 @@ inline double CalcularJainVazao(const std::vector<double>& throughputs);
 // Bytes recebidos acumulados por UE (soma de todos os flows do
 // UE) desde o início da simulação. Redimensionado em main()
 // logo após a criação dos UEs (Bloco 3.2).
+struct AppRxStats
+{
+    uint64_t totalUniquePackets = 0;
+    uint64_t totalBytes = 0;
+    uint64_t trafficUniquePackets = 0;
+    uint64_t trafficBytes = 0;
+    uint64_t duplicatePackets = 0;
+    uint64_t malformedPackets = 0;
+    double delaySumMs = 0.0;
+    std::vector<double> delaysMs;
+};
+
 inline std::vector<uint64_t> g_bytesRecebidosPorUe;
+inline std::vector<uint64_t> g_pacotesRecebidosPorUe;
+inline std::vector<AppRxStats> g_appRxStats;
+inline std::vector<std::set<uint64_t>> g_sequenciasRecebidasPorUe;
+inline Time g_trafficStopTime = Seconds(0);
 
 // Snapshot do acumulado no fechamento da última janela — usado
 // para isolar o delta de bytes recebidos DENTRO da janela atual.
 inline std::vector<uint64_t> g_bytesRecebidosUltimaJanela;
+inline std::vector<uint64_t> g_pacotesRecebidosUltimaJanela;
 
 // CSV de saída do log por janela. Global porque é escrito tanto
 // pelo callback periódico (RegistrarJanela) quanto fechado ao
@@ -353,6 +372,7 @@ inline std::ofstream g_windowCsv;
 // Reiniciado implicitamente a cada execução do binário (processo
 // novo por rodada — não há necessidade de reset manual).
 inline uint32_t g_janelaId = 0;
+inline Time g_inicioUltimaJanela = Seconds(0);
 
 // ------------------------------------------------------------
 // RxWindowCallback()
@@ -371,11 +391,44 @@ inline uint32_t g_janelaId = 0;
 // ("Incompatible types... CallbackImpl<void,Ptr<Packet const>>").
 // ------------------------------------------------------------
 inline void
-RxWindowCallback(uint32_t ueIdx, Ptr<const Packet> packet)
+RxWindowCallback(uint32_t ueIdx, uint32_t flowIdx, Ptr<const Packet> packet)
 {
-    if (ueIdx < g_bytesRecebidosPorUe.size())
+    if (ueIdx >= g_bytesRecebidosPorUe.size())
     {
-        g_bytesRecebidosPorUe[ueIdx] += packet->GetSize();
+        return;
+    }
+
+    Ptr<Packet> copy = packet->Copy();
+    SeqTsHeader seqTs;
+    if (copy->RemoveHeader(seqTs) == 0)
+    {
+        ++g_appRxStats[ueIdx].malformedPackets;
+        return;
+    }
+
+    const uint64_t sequenceKey =
+        (static_cast<uint64_t>(flowIdx) << 32) | seqTs.GetSeq();
+    if (!g_sequenciasRecebidasPorUe[ueIdx].insert(sequenceKey).second)
+    {
+        ++g_appRxStats[ueIdx].duplicatePackets;
+        return;
+    }
+
+    const uint64_t packetBytes = packet->GetSize();
+    const double delayMs =
+        std::max(0.0, (Simulator::Now() - seqTs.GetTs()).GetSeconds() * 1000.0);
+
+    ++g_pacotesRecebidosPorUe[ueIdx];
+    g_bytesRecebidosPorUe[ueIdx] += packetBytes;
+    ++g_appRxStats[ueIdx].totalUniquePackets;
+    g_appRxStats[ueIdx].totalBytes += packetBytes;
+    g_appRxStats[ueIdx].delaySumMs += delayMs;
+    g_appRxStats[ueIdx].delaysMs.push_back(delayMs);
+
+    if (Simulator::Now() <= g_trafficStopTime)
+    {
+        ++g_appRxStats[ueIdx].trafficUniquePackets;
+        g_appRxStats[ueIdx].trafficBytes += packetBytes;
     }
 }
 
@@ -397,7 +450,8 @@ RxWindowCallback(uint32_t ueIdx, Ptr<const Packet> packet)
 // ------------------------------------------------------------
 inline void
 RegistrarJanela(Time windowSize,
-                 Time simTime,
+                 Time trafficStopTime,
+                 Time totalStopTime,
                  std::string schedulerMode,
                  std::string trafficProfile,
                  uint16_t ueNumPergNb,
@@ -405,8 +459,14 @@ RegistrarJanela(Time windowSize,
                  uint32_t rngRun,
                  double bandwidthMhz)
 {
-    double windowSeconds = windowSize.GetSeconds();
+    const Time now = Simulator::Now();
+    const double windowSeconds = (now - g_inicioUltimaJanela).GetSeconds();
+    if (windowSeconds <= 0.0)
+    {
+        return;
+    }
     std::vector<double> throughputPorUeJanela(g_bytesRecebidosPorUe.size(), 0.0);
+    uint64_t pacotesJanela = 0;
 
     for (size_t i = 0; i < g_bytesRecebidosPorUe.size(); ++i)
     {
@@ -415,6 +475,9 @@ RegistrarJanela(Time windowSize,
         throughputPorUeJanela[i] =
             (static_cast<double>(delta) * 8.0) / windowSeconds / 1e6; // Mbps
         g_bytesRecebidosUltimaJanela[i] = g_bytesRecebidosPorUe[i];
+        pacotesJanela += g_pacotesRecebidosPorUe[i] -
+                         g_pacotesRecebidosUltimaJanela[i];
+        g_pacotesRecebidosUltimaJanela[i] = g_pacotesRecebidosPorUe[i];
     }
 
     double throughputAgregado = 0.0;
@@ -436,24 +499,49 @@ RegistrarJanela(Time windowSize,
                     << rngRun << ","
                     << bandwidthMhz << ","
                     << g_janelaId << ","
-                    << Simulator::Now().GetSeconds() << ","
+                    << g_inicioUltimaJanela.GetSeconds() << ","
+                    << now.GetSeconds() << ","
+                    << windowSeconds << ","
+                    << (now <= trafficStopTime ? "traffic" : "drain") << ","
                     << throughputAgregado << ","
-                    << jainJanela << "\n";
+                    << jainJanela << ","
+                    << pacotesJanela << "\n";
     }
 
     ++g_janelaId;
+    g_inicioUltimaJanela = now;
 
     // Reagenda a próxima janela enquanto houver tempo simulado
     // restante — mesmo critério de corte usado na barra de
     // progresso, para não agendar uma janela que nunca fecha.
-    if (Simulator::Now() + windowSize < simTime)
+    if (now < totalStopTime)
     {
-        Simulator::Schedule(windowSize,
+        Time nextDelay = std::min(windowSize, totalStopTime - now);
+        if (now < trafficStopTime)
+        {
+            nextDelay = std::min(nextDelay, trafficStopTime - now);
+        }
+        Simulator::Schedule(nextDelay,
                             &RegistrarJanela,
-                            windowSize, simTime,
+                            windowSize, trafficStopTime, totalStopTime,
                             schedulerMode, trafficProfile,
                             ueNumPergNb, seed, rngRun, bandwidthMhz);
     }
+}
+
+inline double
+CalcularPercentilAmostras(std::vector<double> values, double percentil)
+{
+    if (values.empty())
+    {
+        return 0.0;
+    }
+    std::sort(values.begin(), values.end());
+    const double position = percentil * static_cast<double>(values.size() - 1);
+    const size_t lower = static_cast<size_t>(std::floor(position));
+    const size_t upper = static_cast<size_t>(std::ceil(position));
+    const double fraction = position - static_cast<double>(lower);
+    return values[lower] + (values[upper] - values[lower]) * fraction;
 }
 
 // ============================================================
@@ -583,7 +671,7 @@ struct ResumoUe
     double   delayP99Ms     = 0.0; // máximo p99 entre os fluxos
     uint64_t txPackets      = 0;
     uint64_t rxPackets      = 0;
-    uint64_t lostPackets    = 0;
+    uint64_t undeliveredAtStopPackets    = 0;
 };
 
 #endif // SIMULACAO_VJ5G_UTILS_H

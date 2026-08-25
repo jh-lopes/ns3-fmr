@@ -67,6 +67,7 @@
 #include <iostream>
 #include <map>
 #include <numeric>
+#include <numbers>
 #include <string>
 #include <vector>
 #include <sstream>
@@ -100,6 +101,8 @@ main(int argc, char* argv[])
     // --- Simulação ---
     Time     simTime         = Seconds(30.0);
     Time     udpAppStartTime = MilliSeconds(400);
+    Time     drainTime       = Seconds(0.0);
+    Time     flowMaxPerHopDelay = Seconds(60.0);
     uint32_t seed            = 1;
     uint32_t run             = 1;
 
@@ -214,6 +217,12 @@ main(int argc, char* argv[])
     cmd.AddValue("numerology",
                  "Numerologia 5G NR: 0=15kHz, 1=30kHz, 2=60kHz", numerology);
     cmd.AddValue("simTime",  "Tempo total de simulação", simTime);
+    cmd.AddValue("drainTime",
+                 "Tempo adicional sem novas transmissões para drenar filas",
+                 drainTime);
+    cmd.AddValue("FlowMaxPerHopDelay",
+                 "Timeout do FlowMonitor; deve superar simTime+drainTime",
+                 flowMaxPerHopDelay);
     cmd.AddValue("seed",     "Semente do RNG",           seed);
     cmd.AddValue("rngRun",   "Run do RNG",               run);
     cmd.AddValue("enableMobility",
@@ -296,6 +305,13 @@ main(int argc, char* argv[])
 
     cmd.Parse(argc, argv);
 
+    NS_ABORT_MSG_IF(simTime <= udpAppStartTime,
+                    "simTime deve ser maior que o início das aplicações");
+    NS_ABORT_MSG_IF(drainTime.IsNegative(), "drainTime não pode ser negativo");
+    const Time totalStopTime = simTime + drainTime;
+    NS_ABORT_MSG_IF(flowMaxPerHopDelay <= totalStopTime,
+                    "FlowMaxPerHopDelay deve ser maior que simTime+drainTime");
+
     RngSeedManager::SetSeed(seed);
     RngSeedManager::SetRun(run);
 
@@ -343,6 +359,12 @@ main(int argc, char* argv[])
     // os primeiros pacotes.
     g_bytesRecebidosPorUe.assign(ueNumPergNb, 0);
     g_bytesRecebidosUltimaJanela.assign(ueNumPergNb, 0);
+    g_pacotesRecebidosPorUe.assign(ueNumPergNb, 0);
+    g_pacotesRecebidosUltimaJanela.assign(ueNumPergNb, 0);
+    g_appRxStats.assign(ueNumPergNb, AppRxStats{});
+    g_sequenciasRecebidasPorUe.assign(ueNumPergNb, {});
+    g_trafficStopTime = simTime;
+    g_inicioUltimaJanela = udpAppStartTime;
 
     // --- 3.3 Configurar mobilidade ---
     //
@@ -382,26 +404,31 @@ main(int argc, char* argv[])
         {
             NS_ABORT_MSG_IF(!ueDistances.empty(),
                             "ueDistances só pode ser usado com positionMode=fixed_line");
-            Ptr<RandomDiscPositionAllocator> allocator =
-                CreateObject<RandomDiscPositionAllocator>();
-            allocator->SetAttribute("X", DoubleValue(0.0));
-            allocator->SetAttribute("Y", DoubleValue(0.0));
-            allocator->SetAttribute(
-                "Rho",
-                StringValue("ns3::UniformRandomVariable[Min=10|Max="
-                            + std::to_string(mobilityBounds) + "]"));
-            // Stream fixo: o mesmo rngRun produz a mesma topologia para
-            // RR/PF/MR/QoS; outro rngRun seleciona outro substream.
-            allocator->AssignStreams(1);
-            mobilityUe.SetPositionAllocator(allocator);
-            mobilityUe.Install(ueNodes);
+            NS_ABORT_MSG_IF(mobilityBounds <= 10.0,
+                            "mobilityBounds deve ser maior que 10 m");
+
+            // Uniformidade espacial por ÁREA: rho=sqrt(U(Rmin²,Rmax²)).
+            // Usar rho~U(Rmin,Rmax) concentraria UEs artificialmente no
+            // centro. Streams fixos + rngRun preservam o pareamento entre
+            // schedulers e geram uma topologia distinta em cada run.
+            Ptr<UniformRandomVariable> area = CreateObject<UniformRandomVariable>();
+            Ptr<UniformRandomVariable> angle = CreateObject<UniformRandomVariable>();
+            area->SetStream(1);
+            angle->SetStream(2);
+            Ptr<ListPositionAllocator> allocator = CreateObject<ListPositionAllocator>();
+            const double minRadiusSquared = 10.0 * 10.0;
+            const double maxRadiusSquared = mobilityBounds * mobilityBounds;
             for (uint32_t i = 0; i < ueNodes.GetN(); ++i)
             {
-                Ptr<MobilityModel> model = ueNodes.Get(i)->GetObject<MobilityModel>();
-                Vector position = model->GetPosition();
-                position.z = 1.5;
-                model->SetPosition(position);
+                const double radius = std::sqrt(
+                    minRadiusSquared + area->GetValue() *
+                    (maxRadiusSquared - minRadiusSquared));
+                const double theta = 2.0 * std::numbers::pi * angle->GetValue();
+                allocator->Add(Vector(radius * std::cos(theta),
+                                      radius * std::sin(theta), 1.5));
             }
+            mobilityUe.SetPositionAllocator(allocator);
+            mobilityUe.Install(ueNodes);
         }
         else if (positionMode == "fixed_line")
         {
@@ -859,7 +886,7 @@ main(int argc, char* argv[])
             // Quando flowsPorUe > 1, os bytes de todos os flows
             // do mesmo UE se somam no mesmo índice do vetor.
             servidorUe->TraceConnectWithoutContext(
-                "Rx", MakeBoundCallback(&RxWindowCallback, ueIdx));
+                "Rx", MakeBoundCallback(&RxWindowCallback, ueIdx, flowIdx));
 
             UdpClientHelper clientHelper(ueIpIface.GetAddress(ueIdx), port);
             clientHelper.SetAttribute(
@@ -881,7 +908,7 @@ main(int argc, char* argv[])
     // Apps começam após 400ms — garante attach UE-gNB completo.
     serverApps.Start(udpAppStartTime);
     clientApps.Start(udpAppStartTime);
-    serverApps.Stop(simTime);
+    serverApps.Stop(totalStopTime);
     clientApps.Stop(simTime);
 
     NS_LOG_INFO("Aplicações UDP instaladas:"
@@ -986,6 +1013,7 @@ main(int argc, char* argv[])
     // insuficiente para URLLC (delay budget = 100ms).
     monitor->SetAttribute("DelayBinWidth",  DoubleValue(0.001));
     monitor->SetAttribute("JitterBinWidth", DoubleValue(0.001));
+    monitor->SetAttribute("MaxPerHopDelay", TimeValue(flowMaxPerHopDelay));
 
     // --- 7.1b Abrir CSV de log por janela (Bloco 6B) ---
     // Aberto antes do Run() porque RegistrarJanela é agendada
@@ -995,8 +1023,9 @@ main(int argc, char* argv[])
     {
         g_windowCsv.open(windowCsvPath);
         g_windowCsv << "scheduler,traffic_profile,num_ues,seed,rng_run,"
-                    << "bandwidth_mhz,window_id,time_s,"
-                    << "aggregate_thr_mbps,jain_throughput\n";
+                    << "bandwidth_mhz,window_id,start_time_s,end_time_s,"
+                    << "duration_s,phase,aggregate_thr_mbps,jain_throughput,"
+                    << "app_rx_packets\n";
 
         // Primeira janela fecha em udpAppStartTime + windowSizeMs —
         // não em windowSizeMs a partir de zero, porque as apps só
@@ -1005,7 +1034,7 @@ main(int argc, char* argv[])
         // vazias (thr=0, Jain=0) sem significado.
         Simulator::Schedule(udpAppStartTime + MilliSeconds(windowSizeMs),
                             &RegistrarJanela,
-                            MilliSeconds(windowSizeMs), simTime,
+                            MilliSeconds(windowSizeMs), simTime, totalStopTime,
                             schedulerMode, trafficProfile,
                             ueNumPergNb, seed, run, bandwidth / 1e6);
 
@@ -1019,10 +1048,13 @@ main(int argc, char* argv[])
                << " scheduler=" << schedulerMode
                << " perfil=" << trafficProfile
                << " ues=" << ueNumPergNb
-               << " simTime=" << simTime.GetSeconds() << "s");
+               << " trafficStop=" << simTime.GetSeconds() << "s"
+               << " drain=" << drainTime.GetSeconds() << "s");
 
-    Simulator::Schedule(Seconds(0.0), &ExibirBarraDeProgresso, simTime);
-    Simulator::Stop(simTime);
+    Simulator::Schedule(Seconds(0.0), &ExibirBarraDeProgresso, totalStopTime);
+    // O epsilon permite que o callback da janela que fecha exatamente em
+    // totalStopTime execute antes do encerramento do simulador.
+    Simulator::Stop(totalStopTime + NanoSeconds(1));
     Simulator::Run();
 
     ImprimirBarraDeProgressoFinal();
@@ -1050,9 +1082,11 @@ main(int argc, char* argv[])
         flowCsv.open(flowSummaryCsvPath);
         flowCsv << "scheduler,traffic_profile,num_ues,seed,rng_run,"
                 << "bandwidth_mhz,flow_id,ue_id,"
-                << "throughput_mbps,delay_mean_ms,delay_p99_ms,"
-                << "jitter_mean_ms,plr_pct,pdr_pct,"
-                << "tx_packets,rx_packets,lost_packets,"
+                << "flowmon_throughput_mbps,flowmon_delay_mean_ms,"
+                << "flowmon_delay_p99_ms,flowmon_jitter_mean_ms,"
+                << "flowmon_undelivered_pct,flowmon_pdr_pct,"
+                << "flowmon_tx_packets,flowmon_rx_packets,"
+                << "flowmon_undelivered_at_stop_packets,"
                 << "sinr_mean_db,distance_gnb_m\n";
     }
 
@@ -1104,25 +1138,18 @@ main(int argc, char* argv[])
                            / (flowStats.rxPackets - 1)) * 1000.0;
         }
 
-        // CORREÇÃO (11/ago/2026): flowStats.lostPackets, do FlowMonitor do
-        // ns-3, fica preso em 0 nesta topologia — o FlowMonitor só marca um
-        // pacote como "perdido" através de uma heurística de timeout entre
-        // os classificadores de origem/destino, que não dispara aqui (tráfego
-        // UDP unidirecional sobre portadora 5G-LENA). Isso deixava plr_pct=0
-        // mesmo quando rx_packets << tx_packets — contradição visível ao
-        // comparar com pdr_pct, que É calculado corretamente a partir de
-        // rx/tx. A perda real de pacotes é sempre tx-rx (nenhum pacote some
-        // "no meio do caminho" sem ou ter chegado ou não ter chegado até o
-        // fim da simulação), então tanto plrPct quanto lostPacketsReais
-        // passam a ser derivados de tx/rx, e não do contador do FlowMonitor.
-        uint64_t lostPacketsReais = (flowStats.txPackets > flowStats.rxPackets)
+        // O contador lostPackets nativo do FlowMonitor depende do timeout.
+        // A diferença tx-rx é exportada explicitamente
+        // como "não entregue até o fim"; ela não é chamada de perda física,
+        // pois pode incluir backlog remanescente após o drain.
+        uint64_t undeliveredAtStop = (flowStats.txPackets > flowStats.rxPackets)
             ? (flowStats.txPackets - flowStats.rxPackets) : 0;
 
         double plrPct = 0.0;
         double pdrPct = 0.0;
         if (flowStats.txPackets > 0)
         {
-            plrPct = (static_cast<double>(lostPacketsReais)
+            plrPct = (static_cast<double>(undeliveredAtStop)
                      / flowStats.txPackets) * 100.0;
             pdrPct = (static_cast<double>(flowStats.rxPackets)
                      / flowStats.txPackets) * 100.0;
@@ -1153,7 +1180,7 @@ main(int argc, char* argv[])
                 std::max(resumoPorUe[ueIdx].delayP99Ms, delayP99Ms);
             resumoPorUe[ueIdx].txPackets       += flowStats.txPackets;
             resumoPorUe[ueIdx].rxPackets       += flowStats.rxPackets;
-            resumoPorUe[ueIdx].lostPackets     += lostPacketsReais;
+            resumoPorUe[ueIdx].undeliveredAtStopPackets     += undeliveredAtStop;
         }
 
         NS_LOG_INFO("Flow " << flowId
@@ -1181,7 +1208,7 @@ main(int argc, char* argv[])
                     << pdrPct << ","
                     << flowStats.txPackets << ","
                     << flowStats.rxPackets << ","
-                    << lostPacketsReais << ","
+                    << undeliveredAtStop << ","
                     << sinrMeanDb << ","
                     << distanceM << "\n";
         }
@@ -1193,20 +1220,36 @@ main(int argc, char* argv[])
         NS_LOG_INFO("flow_summary salvo em: " << flowSummaryCsvPath);
     }
 
-    // --- 7.6 Calcular Índice de Jain sobre vazão ---
-    // Contribuição original — agrega throughput por UE
-    // (não por fluxo individual): J=(Σthr_i)²/(n×Σthr_i²).
-    // Nota: Jain=1.0 ocorre em rede subcarregada — todos UEs
-    // satisfeitos. Para Jain < 1, demanda deve exceder a
-    // capacidade de pelo menos um UE (ex: MR com canal restrito).
-    double jainVazao = CalcularJainVazao(throughputPorUe);
-
-    // Throughput agregado calculado ANTES dos CSVs e relatório
-    double throughputAgregadoMbps = 0.0;
-    for (double thr : throughputPorUe)
+    // --- 7.6 Métricas canônicas na aplicação ---
+    // O FlowMonitor permanece como instrumento de comparação, mas a fonte
+    // principal passa a ser o UdpServer: ele não esquece pacotes atrasados e
+    // mede payload, exatamente como o log por janela.
+    std::vector<double> appTrafficThroughputPorUe(ueNodes.GetN(), 0.0);
+    std::vector<double> appTotalGoodputPorUe(ueNodes.GetN(), 0.0);
+    for (uint32_t i = 0; i < ueNodes.GetN(); ++i)
     {
-        throughputAgregadoMbps += thr;
+        if (activeSeconds > 0.0)
+        {
+            appTrafficThroughputPorUe[i] =
+                (g_appRxStats[i].trafficBytes * 8.0) / activeSeconds / 1e6;
+            // Eventual goodput: tudo que chegou até o fim do drain,
+            // normalizado pela duração em que a carga foi oferecida.
+            appTotalGoodputPorUe[i] =
+                (g_appRxStats[i].totalBytes * 8.0) / activeSeconds / 1e6;
+        }
     }
+
+    const double appTrafficJain = CalcularJainVazao(appTrafficThroughputPorUe);
+    const double appTotalJain = CalcularJainVazao(appTotalGoodputPorUe);
+    const double flowmonJain = CalcularJainVazao(throughputPorUe);
+    const double appTrafficThroughputAgregado =
+        std::accumulate(appTrafficThroughputPorUe.begin(),
+                        appTrafficThroughputPorUe.end(), 0.0);
+    const double appTotalGoodputAgregado =
+        std::accumulate(appTotalGoodputPorUe.begin(),
+                        appTotalGoodputPorUe.end(), 0.0);
+    const double flowmonThroughputAgregado =
+        std::accumulate(throughputPorUe.begin(), throughputPorUe.end(), 0.0);
 
     // --- 7.7 Exportar ue_summary.csv e detalhe no console ---
     std::ofstream ueCsv;
@@ -1220,10 +1263,25 @@ main(int argc, char* argv[])
         ueCsv << "scheduler,traffic_profile,num_ues,seed,rng_run,bandwidth_mhz,"
               << "position_mode,mobility_enabled,mobility_bounds_m,"
               << "ue_id,rnti,x_initial_m,y_initial_m,z_initial_m,"
-              << "throughput_mbps,sinr_mean_db,distance_gnb_m,"
-              << "delay_mean_ms,delay_p99_ms,plr_pct,pdr_pct,"
-              << "tx_packets,rx_packets,lost_packets,"
-              << "jain_vazao,throughput_agregado_mbps\n";
+              << "app_throughput_traffic_mbps,app_goodput_total_mbps,"
+              << "app_rx_packets_at_traffic_stop,app_rx_packets_total,"
+              << "app_rx_bytes_at_traffic_stop,app_rx_bytes_total,"
+              << "app_duplicate_packets,app_malformed_packets,"
+              << "app_delay_mean_ms,app_delay_p99_ms,"
+              << "app_pdr_at_traffic_stop_pct,app_pdr_total_pct,"
+              << "app_undelivered_at_stop_packets,"
+              << "flowmon_throughput_mbps,flowmon_delay_mean_ms,"
+              << "flowmon_delay_p99_ms,flowmon_pdr_pct,"
+              << "flowmon_undelivered_at_stop_packets,flowmon_tx_packets,"
+              << "flowmon_rx_packets,sinr_mean_db,sinr_samples,distance_gnb_m,"
+              << "app_jain_traffic,app_jain_total,flowmon_jain,"
+              << "app_throughput_traffic_aggregate_mbps,"
+              << "app_goodput_total_aggregate_mbps,"
+              << "flowmon_throughput_aggregate_mbps,"
+              << "packet_size_bytes,lambda_pps,app_start_s,traffic_stop_s,"
+              << "drain_time_s,total_stop_s,flow_max_per_hop_delay_s,"
+              << "window_size_ms,central_frequency_hz,total_tx_power_dbm,"
+              << "numerology,tdd_pattern\n";
     }
 
     if (enableConsoleDetails)
@@ -1237,14 +1295,22 @@ main(int argc, char* argv[])
     for (uint32_t i = 0; i < ueNodes.GetN(); ++i)
     {
         const ResumoUe& r = resumoPorUe[i];
+        const AppRxStats& app = g_appRxStats[i];
 
         uint32_t nFluxos = perfil.flowsPorUe;
         double delayMedioMs = nFluxos > 0 ? r.delaySomaMs / nFluxos : 0.0;
 
-        double plrPct = r.txPackets > 0
-            ? static_cast<double>(r.lostPackets) / r.txPackets * 100.0 : 0.0;
-        double pdrPct = r.txPackets > 0
+        double flowmonPdrPct = r.txPackets > 0
             ? static_cast<double>(r.rxPackets) / r.txPackets * 100.0 : 0.0;
+        double appPdrTrafficPct = r.txPackets > 0
+            ? static_cast<double>(app.trafficUniquePackets) / r.txPackets * 100.0 : 0.0;
+        double appPdrTotalPct = r.txPackets > 0
+            ? static_cast<double>(app.totalUniquePackets) / r.txPackets * 100.0 : 0.0;
+        uint64_t appUndeliveredAtStop = r.txPackets > app.totalUniquePackets
+            ? r.txPackets - app.totalUniquePackets : 0;
+        double appDelayMeanMs = app.totalUniquePackets > 0
+            ? app.delaySumMs / static_cast<double>(app.totalUniquePackets) : 0.0;
+        double appDelayP99Ms = CalcularPercentilAmostras(app.delaysMs, 0.99);
 
         // CORREÇÃO (12/ago/2026): idem — busca por ueIdx real (i), não
         // mais por RNTI adivinhado.
@@ -1262,15 +1328,15 @@ main(int argc, char* argv[])
             std::cout << std::fixed;
             std::cout << "UE" << std::left << std::setw(2) << i
                       << " " << std::setw(8) << std::setprecision(2)
-                      << r.throughputMbps << " Mbps"
+                      << appTrafficThroughputPorUe[i] << " Mbps(app)"
                       << " | SINR " << std::setw(7) << std::setprecision(2)
                       << sinrDb << " dB"
                       << " | Dist " << std::setw(6) << std::setprecision(1)
                       << distM << " m"
                       << " | Delay " << std::setw(7) << std::setprecision(2)
-                      << delayMedioMs << " ms"
-                      << " | PLR " << std::setprecision(2)
-                      << plrPct << "%" << std::endl;
+                      << appDelayMeanMs << " ms"
+                      << " | PDR " << std::setprecision(2)
+                      << appPdrTotalPct << "%" << std::endl;
         }
 
         if (enableUeSummaryCsv)
@@ -1297,18 +1363,47 @@ main(int argc, char* argv[])
                   << initialPosition.x << ","
                   << initialPosition.y << ","
                   << initialPosition.z << ","
+                  << appTrafficThroughputPorUe[i] << ","
+                  << appTotalGoodputPorUe[i] << ","
+                  << app.trafficUniquePackets << ","
+                  << app.totalUniquePackets << ","
+                  << app.trafficBytes << ","
+                  << app.totalBytes << ","
+                  << app.duplicatePackets << ","
+                  << app.malformedPackets << ","
+                  << appDelayMeanMs << ","
+                  << appDelayP99Ms << ","
+                  << appPdrTrafficPct << ","
+                  << appPdrTotalPct << ","
+                  << appUndeliveredAtStop << ","
                   << r.throughputMbps << ","
-                  << sinrDb << ","
-                  << distM << ","
                   << delayMedioMs << ","
                   << r.delayP99Ms << ","
-                  << plrPct << ","
-                  << pdrPct << ","
+                  << flowmonPdrPct << ","
+                  << r.undeliveredAtStopPackets << ","
                   << r.txPackets << ","
                   << r.rxPackets << ","
-                  << r.lostPackets << ","
-                  << jainVazao << ","
-                  << throughputAgregadoMbps << "\n";
+                  << sinrDb << ","
+                  << (sinrIt != g_sinrAcumulado.end() ? sinrIt->second.second : 0) << ","
+                  << distM << ","
+                  << appTrafficJain << ","
+                  << appTotalJain << ","
+                  << flowmonJain << ","
+                  << appTrafficThroughputAgregado << ","
+                  << appTotalGoodputAgregado << ","
+                  << flowmonThroughputAgregado << ","
+                  << perfil.pacoteBytes << ","
+                  << perfil.lambda << ","
+                  << udpAppStartTime.GetSeconds() << ","
+                  << simTime.GetSeconds() << ","
+                  << drainTime.GetSeconds() << ","
+                  << totalStopTime.GetSeconds() << ","
+                  << flowMaxPerHopDelay.GetSeconds() << ","
+                  << windowSizeMs << ","
+                  << centralFrequency << ","
+                  << totalTxPowerDbm << ","
+                  << static_cast<uint32_t>(numerology) << ","
+                  << tddPattern << "\n";
         }
     }
 
@@ -1318,10 +1413,8 @@ main(int argc, char* argv[])
         NS_LOG_UNCOND("[VJ5G] ue_summary salvo em: " << ueSummaryCsvPath);
     }
 
-    // Fecha o CSV de log por janela (Bloco 6B) — a última janela
-    // parcial (entre o último fechamento e o fim da simulação)
-    // não é registrada, pelo mesmo critério de corte usado no
-    // reagendamento dentro de RegistrarJanela.
+    // Fecha o CSV de log por janela. RegistrarJanela inclui também
+    // a última janela parcial e identifica traffic/drain explicitamente.
     if (enableWindowCsv && g_windowCsv.is_open())
     {
         g_windowCsv.close();
@@ -1346,11 +1439,17 @@ main(int argc, char* argv[])
                << " (agora aplicada de fato — ver correção de 12/ago/2026)" << std::endl;
     std::cout << "Padrão TDD          : " << tddPattern
                << " (agora aplicado de fato — ver correção de 13/ago/2026)" << std::endl;
-    std::cout << "Tempo simulado      : " << simTime.GetSeconds() << " s" << std::endl;
+    std::cout << "Fim do tráfego      : " << simTime.GetSeconds() << " s" << std::endl;
+    std::cout << "Tempo de drain      : " << drainTime.GetSeconds() << " s" << std::endl;
+    std::cout << "Fim da simulação    : " << totalStopTime.GetSeconds() << " s" << std::endl;
     ImprimirSeparador('-', 52);
-    std::cout << "Throughput agregado : " << throughputAgregadoMbps << " Mbps" << std::endl;
-    std::cout << "Índice de Jain      : " << std::setprecision(4)
-              << jainVazao << std::endl;
+    std::cout << "Throughput app      : " << appTrafficThroughputAgregado << " Mbps" << std::endl;
+    std::cout << "Goodput app + drain : " << appTotalGoodputAgregado << " Mbps" << std::endl;
+    std::cout << "Throughput FlowMon  : " << flowmonThroughputAgregado << " Mbps" << std::endl;
+    std::cout << "Jain app (tráfego)  : " << std::setprecision(4)
+              << appTrafficJain << std::endl;
+    std::cout << "Jain app (+ drain)  : " << appTotalJain << std::endl;
+    std::cout << "Jain FlowMonitor    : " << flowmonJain << std::endl;
     std::cout << "SINR coletado       : " << g_sinrAcumulado.size()
               << " UEs" << std::endl;
     ImprimirSeparador('=', 52);
@@ -1369,8 +1468,12 @@ main(int argc, char* argv[])
     NS_LOG_UNCOND("[RESULT]"
                << " scheduler=" << schedulerMode
                << " perfil=" << trafficProfile
-               << " throughput_mbps=" << throughputAgregadoMbps
-               << " jain_vazao=" << jainVazao
+               << " throughput_mbps=" << appTrafficThroughputAgregado
+               << " jain_vazao=" << appTrafficJain
+               << " app_total_goodput_mbps=" << appTotalGoodputAgregado
+               << " app_total_jain=" << appTotalJain
+               << " flowmon_throughput_mbps=" << flowmonThroughputAgregado
+               << " flowmon_jain=" << flowmonJain
                << " ues=" << ueNumPergNb
                << " seed=" << seed
                << " rng_run=" << run);
