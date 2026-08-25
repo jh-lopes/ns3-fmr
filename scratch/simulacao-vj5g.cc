@@ -334,7 +334,11 @@ main(int argc, char* argv[])
 
     NS_ABORT_MSG_IF(simTime <= udpAppStartTime,
                     "simTime deve ser maior que o início das aplicações");
-    NS_ABORT_MSG_IF(drainTime.IsNegative(), "drainTime não pode ser negativo");
+    // Time::IsNegative() no ns-3 significa <= 0, portanto rejeitava também o
+    // valor padrão válido Seconds(0). Apenas valores estritamente negativos
+    // devem abortar; drainTime=0 executa sem fase adicional de drenagem.
+    NS_ABORT_MSG_IF(drainTime.IsStrictlyNegative(),
+                    "drainTime não pode ser negativo");
     const Time totalStopTime = simTime + drainTime;
     NS_ABORT_MSG_IF(flowMaxPerHopDelay <= totalStopTime,
                     "FlowMaxPerHopDelay deve ser maior que simTime+drainTime");

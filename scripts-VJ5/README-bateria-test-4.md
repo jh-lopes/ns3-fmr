@@ -28,6 +28,11 @@ resultados de aplicações diferentes não são tratados como replicações.
 
 ## Semântica temporal
 
+`--drainTime=0s` é válido e significa encerrar a simulação sem uma fase
+adicional de drenagem. Valores negativos são rejeitados. Informar apenas
+`--FlowSummaryCsvPath` não ativa a coleta; para gerar esse arquivo numa
+execução manual, use também `--EnableFlowSummaryCsv=true`.
+
 Por padrão:
 
 - aplicações começam em `0,4 s`;
