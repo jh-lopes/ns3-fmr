@@ -19,6 +19,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from statistics import fmean, median, stdev
 
+from csv_numeric_guard import validate_numeric_csv
+
 ROOT = Path(__file__).resolve().parent.parent
 SCHEDULERS = ("rr", "pf", "mr", "qos")
 DEFAULT_LAMBDA_PPS = 500
@@ -277,6 +279,24 @@ def validate_corrected_outputs(ue_path: Path, window_path: Path,
                                channel_condition: str = "Default",
                                channel_model: str = "ThreeGpp",
                                shadowing_enabled: bool = True) -> dict[str, float]:
+    validate_numeric_csv(
+        ue_path,
+        {"rng_run", "ue_id", "x_initial_m", "y_initial_m", "z_initial_m",
+         "distance_gnb_m", "app_throughput_traffic_mbps",
+         "app_goodput_total_mbps", "app_jain_traffic", "app_jain_total",
+         "flowmon_throughput_mbps", "flowmon_jain"},
+        {"z_initial_m": (0.0, 100.0), "distance_gnb_m": (0.0, 10_000.0),
+         "app_jain_traffic": (0.0, 1.0), "app_jain_total": (0.0, 1.0),
+         "flowmon_jain": (0.0, 1.0)},
+    )
+    validate_numeric_csv(
+        window_path,
+        {"rng_run", "window_id", "start_time_s", "end_time_s", "duration_s",
+         "aggregate_thr_mbps", "jain_throughput", "app_rx_packets"},
+        {"start_time_s": (0.0, None), "end_time_s": (0.0, None),
+         "duration_s": (0.0, None), "aggregate_thr_mbps": (0.0, None),
+         "jain_throughput": (0.0, 1.0), "app_rx_packets": (0.0, None)},
+    )
     ue_rows = read_csv_required(ue_path, {
         "rng_run", "application_mode", "flows_per_ue", "ue_id", "x_initial_m", "y_initial_m", "z_initial_m",
         "distance_gnb_m", "app_throughput_traffic_mbps",
@@ -468,7 +488,6 @@ def run_one(args: argparse.Namespace, scenario: Scenario, scheduler: str,
         f"--channelModel={args.channel_model}",
         f"--enableShadowing={'true' if args.enable_shadowing else 'false'}",
         f"--lambdaOverride={args.lambda_pps}",
-        f"--flowsPerUe={scenario.flows_per_ue}",
         "--EnableConsoleDetails=false", "--EnableWindowCsv=true",
         f"--WindowSizeMs={args.window_ms}", f"--WindowCsvPath={window}",
         "--EnableUeSummaryCsv=true", f"--UeSummaryCsvPath={ue}",

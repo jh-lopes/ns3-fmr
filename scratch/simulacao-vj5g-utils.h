@@ -586,6 +586,7 @@ RegistrarJanela(Time windowSize,
                     << now.GetSeconds() << ","
                     << windowSeconds << ","
                     << (now <= trafficStopTime ? "traffic" : "drain") << ","
+                    << "app_rx_unique_payload,"
                     << throughputAgregado << ","
                     << jainJanela << ","
                     << pacotesJanela << "\n";

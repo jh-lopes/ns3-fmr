@@ -52,8 +52,20 @@ python3 scripts-VJ5/bateria_test_3.py \
 ```
 
 `--smoke` executa somente uma run de 1 s para cada um dos quatro schedulers.
-Ele valida geração dos CSVs, `rng_run`, hash e pareamento da topologia, mas não
-tem validade estatística e não avalia convergência.
+Ele valida geração dos CSVs, sintaxe decimal ASCII, limites físicos, `rng_run`,
+hash e pareamento da topologia, mas não tem validade estatística e não avalia
+convergência. Uma execução com vírgula decimal, valor convertido em data, Jain
+fora de `[0,1]` ou coordenada escalada por mil recebe status `ERROR`.
+
+## Importação em Google Sheets
+
+Os arquivos `window_log.csv`, `ue_summary.csv` e `flow_summary.csv` são as
+fontes canônicas e usam vírgula como delimitador e ponto como separador
+decimal. Antes de importar, configure a planilha como **Estados Unidos** em
+`Arquivo > Configurações > Localidade`. Não importe esses CSVs diretamente em
+uma planilha `pt_BR`: valores como `0.272873` podem virar `272873` e `1.5` pode
+ser interpretado como data. Alterar apenas a aparência depois não recupera o
+valor original; nesse caso, reimporte a partir do CSV canônico.
 
 Confira que os hashes são iguais entre schedulers da mesma run e diferentes
 entre runs:

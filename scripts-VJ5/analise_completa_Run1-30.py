@@ -27,7 +27,7 @@ import seaborn as sns
 SCRIPT_DIR = Path(__file__).resolve().parent
 ROOT = SCRIPT_DIR.parent
 SCHEDULERS = ("rr", "pf", "mr", "qos")
-SCHEDULER_COLORS = {"rr": "#2E86C1", "pf": "#28B463", "mr": "#E74C3C", "qos": "#8E44AD"}
+SCHEDULER_COLORS = {"rr": "#FF7F0E", "pf": "#28B463", "mr": "#E53935", "qos": "#2E86C1"}
 SCHEDULER_MARKERS = {"rr": "o", "pf": "s", "mr": "^", "qos": "D"}
 SCHEDULER_LABELS = {
     "rr": "Round Robin", "pf": "Proportional Fair", "mr": "Max Rate", "qos": "QoS",
@@ -631,6 +631,23 @@ def plots(data: pd.DataFrame, quality: pd.DataFrame, ue: pd.DataFrame,
                     marker=SCHEDULER_MARKERS[scheduler], label=SCHEDULER_LABELS[scheduler],
                     alpha=.75, s=np.where(part.nash_winner, 110, 45),
                     edgecolors=np.where(part.pareto, "black", "none"))
+    fronteira = (pareto[pareto.pareto]
+                 .drop_duplicates(["throughput_mbps", "jain"])
+                 .sort_values(["throughput_mbps", "jain"]))
+    if not fronteira.empty:
+        plt.plot(fronteira.throughput_mbps, fronteira.jain, "--",
+                 color="black", linewidth=1.8, label="Fronteira de Pareto", zorder=4)
+    vencedores = pareto[pareto.nash_winner]
+    if not vencedores.empty:
+        nash = vencedores.sort_values(["nash_score", "jain", "throughput_mbps"]).iloc[-1]
+        plt.scatter(nash.throughput_mbps, nash.jain, marker="*", s=180,
+                    color="#7A1FA2", edgecolors="white", linewidths=.8,
+                    label="Solução de Nash", zorder=6)
+        plt.annotate("Nash", (nash.throughput_mbps, nash.jain), xytext=(10, 10),
+                     textcoords="offset points", fontsize=9, fontweight="bold",
+                     color="#7A1FA2",
+                     bbox=dict(boxstyle="round,pad=.2", fc="white", ec="#888888", alpha=.92),
+                     arrowprops=dict(arrowstyle="-", color="#444444", lw=.8))
     plt.xlabel(LABELS["throughput_mbps"]); plt.ylabel(LABELS["jain"]); plt.legend()
     savefig(dirs["pareto"] / f"Pareto_Cloud_{SUFFIX}")
 

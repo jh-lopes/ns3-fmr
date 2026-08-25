@@ -67,6 +67,12 @@ com ponto decimal, mesmo quando o servidor está configurado para `pt_BR`.
 Contagens (`num_ues`, pacotes, amostras, IDs etc.) continuam inteiras de
 propósito e, portanto, não recebem casas decimais.
 
+As validações da bateria também rejeitam automaticamente números fora do
+formato ASCII canônico, Jain fora de `[0,1]`, valores não finitos e sinais de
+escala decimal incorreta. Para importar em Google Sheets, defina primeiro a
+localidade da planilha como **Estados Unidos**; uma planilha `pt_BR` pode tratar
+o ponto como separador de milhares ou converter valores como `1.5` em data.
+
 Por padrão:
 
 - aplicações começam em `0,4 s`;

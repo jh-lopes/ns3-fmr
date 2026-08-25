@@ -18,6 +18,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from statistics import fmean, median, stdev
 
+from csv_numeric_guard import validate_numeric_csv
+
 ROOT = Path(__file__).resolve().parent.parent
 SCHEDULERS = ("rr", "pf", "mr", "qos")
 DEFAULT_LAMBDA_PPS = 500
@@ -217,6 +219,54 @@ def position_hash(path: Path, expected_run: int) -> str:
     return hashlib.sha256(payload.encode()).hexdigest()
 
 
+def validate_result_csvs(ue: Path, window: Path, flow: Path) -> None:
+    """Impede que CSV decimalmente corrompido seja aceito pela campanha."""
+    def headers(path: Path) -> set[str]:
+        with path.open(newline="", encoding="utf-8-sig") as handle:
+            return set(next(csv.reader(handle)))
+
+    ue_headers = headers(ue)
+    window_headers = headers(window)
+    flow_headers = headers(flow)
+    ue_throughput = ("app_throughput_traffic_mbps"
+                     if "app_throughput_traffic_mbps" in ue_headers
+                     else "throughput_mbps")
+    ue_jains = ({"app_jain_traffic", "app_jain_total", "flowmon_jain"}
+                if "app_jain_traffic" in ue_headers else {"jain_vazao"})
+    ue_aggregate = ({"app_throughput_traffic_aggregate_mbps"}
+                    if "app_throughput_traffic_aggregate_mbps" in ue_headers
+                    else {"throughput_agregado_mbps"})
+    validate_numeric_csv(
+        ue,
+        {"rng_run", "ue_id", "x_initial_m", "y_initial_m", "z_initial_m",
+         ue_throughput, "sinr_mean_db", "distance_gnb_m"} | ue_jains | ue_aggregate,
+        {"z_initial_m": (0.0, 100.0), "distance_gnb_m": (0.0, 10_000.0),
+         "jain_vazao": (0.0, 1.0), "app_jain_traffic": (0.0, 1.0),
+         "app_jain_total": (0.0, 1.0), "flowmon_jain": (0.0, 1.0)},
+    )
+    window_time = "end_time_s" if "end_time_s" in window_headers else "time_s"
+    validate_numeric_csv(
+        window,
+        {"rng_run", "window_id", window_time, "aggregate_thr_mbps",
+         "jain_throughput"},
+        {window_time: (0.0, None), "aggregate_thr_mbps": (0.0, None),
+         "jain_throughput": (0.0, 1.0)},
+    )
+    flow_throughput = ("flowmon_throughput_mbps"
+                       if "flowmon_throughput_mbps" in flow_headers
+                       else "throughput_mbps")
+    flow_tx = "flowmon_tx_packets" if "flowmon_tx_packets" in flow_headers else "tx_packets"
+    flow_rx = "flowmon_rx_packets" if "flowmon_rx_packets" in flow_headers else "rx_packets"
+    flow_lost = ({"lost_packets"} if "lost_packets" in flow_headers
+                 else {"flowmon_undelivered_at_stop_packets"})
+    validate_numeric_csv(
+        flow,
+        {"rng_run", "ue_id", flow_tx, flow_rx, flow_throughput} | flow_lost,
+        {flow_tx: (0.0, None), flow_rx: (0.0, None),
+         next(iter(flow_lost)): (0.0, None), flow_throughput: (0.0, None)},
+    )
+
+
 def run_one(args: argparse.Namespace, scenario: Scenario, scheduler: str,
             rng_run: int) -> dict[str, object]:
     output = args.output / scenario.name / f"run_{rng_run:03d}" / scheduler
@@ -266,6 +316,7 @@ def run_one(args: argparse.Namespace, scenario: Scenario, scheduler: str,
             raise RuntimeError(" | ".join(console.strip().splitlines()[-8:]))
         if int(match.group(3)) != rng_run:
             raise RuntimeError("rng_run divergente na linha [RESULT]")
+        validate_result_csvs(ue, window, flow)
         row.update(
             throughput_mbps=match.group(1), jain=match.group(2),
             window_throughput_mean_mbps=csv_mean(window, "aggregate_thr_mbps"),

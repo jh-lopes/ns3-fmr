@@ -370,7 +370,8 @@ main(int argc, char* argv[])
     // builds antigos que rejeitavam drainTime=0 e tinham callback HTTP incorreto.
     NS_LOG_UNCOND("[VJ5G] build_capabilities="
                   "drain_zero,http_rx_address,classic_decimal,"
-                  "explicit_dl_tft,dynamic_udp_phases");
+                  "explicit_dl_tft,dynamic_udp_phases,"
+                  "window_app_rx_unique_payload");
 
     std::vector<double> dynamicPhaseDurations;
     std::vector<uint32_t> dynamicPhaseLambdas;
@@ -1207,7 +1208,7 @@ main(int argc, char* argv[])
         g_windowCsv << std::fixed << std::setprecision(6);
         g_windowCsv << "scheduler,traffic_profile,num_ues,flows_per_ue,seed,rng_run,"
                     << "bandwidth_mhz,window_id,start_time_s,end_time_s,"
-                    << "duration_s,phase,aggregate_thr_mbps,jain_throughput,"
+                    << "duration_s,phase,metric_source,aggregate_thr_mbps,jain_throughput,"
                     << "app_rx_packets\n";
 
         // Primeira janela fecha em udpAppStartTime + windowSizeMs —
