@@ -220,7 +220,11 @@ def resolve_binary(configured: Path | None) -> Path:
     for candidate in candidates:
         if candidate and candidate.is_file() and os.access(candidate, os.X_OK):
             return candidate.resolve()
-    raise SystemExit("Binário simulacao-vj5g não encontrado; execute './ns3 build'.")
+    raise SystemExit(
+        "Binário simulacao-vj5g não encontrado. A fonte scratch pode ter "
+        "sido adicionada depois da última configuração: execute './ns3 configure' "
+        "e depois './ns3 build', ou informe --sim-binary explicitamente."
+    )
 
 
 def csv_mean(path: Path, column: str, phase: str | None = None) -> float:

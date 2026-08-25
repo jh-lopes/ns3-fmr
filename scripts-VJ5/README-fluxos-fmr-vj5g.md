@@ -40,6 +40,30 @@ duração total do tráfego e cada lambda é aplicado exclusivamente à coleçã
 
 ## Exemplo
 
+### Quando `./ns3 run` não encontra o programa
+
+O wrapper `./ns3` consulta os alvos registrados no cache CMake. Se
+`scratch/simulacao-vj5g.cc` foi criado ou atualizado depois da última
+configuração, ele pode existir no Git e ainda assim não aparecer no cache.
+Nesse caso, reconfigure e compile antes de executar:
+
+```bash
+./ns3 configure
+./ns3 build
+./ns3 show targets | rg "simulacao-vj5g"
+./ns3 run "scratch/simulacao-vj5g --applicationMode=udp --ueNumPergNb=4"
+```
+
+Se o executável já existir, também é possível eliminar a ambiguidade do
+wrapper e chamá-lo diretamente:
+
+```bash
+BIN=$(find "$PWD/build/scratch" -maxdepth 1 -type f -perm -111 \
+  -name 'ns3.*-simulacao-vj5g-*' -print -quit)
+test -n "$BIN" || { echo "simulacao-vj5g ainda não foi compilado"; exit 1; }
+"$BIN" --applicationMode=udp --ueNumPergNb=4
+```
+
 ```bash
 ./ns3 run "scratch/simulacao-vj5g \
   --applicationMode=udp \
