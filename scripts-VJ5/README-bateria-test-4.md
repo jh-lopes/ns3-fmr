@@ -11,7 +11,7 @@ resultados de aplicações diferentes não são tratados como replicações.
 ## Correções incorporadas
 
 - posições estáticas uniformes **por área** no anel de 10 m ao raio configurado;
-- métricas canônicas coletadas diretamente no `UdpServer`;
+- métricas canônicas coletadas na aplicação (`UdpServer` ou cliente HTTP 3GPP);
 - detecção de duplicatas por `(UE, fluxo, sequência)`;
 - atraso médio e p99 calculados com `SeqTsHeader` na aplicação;
 - clientes param no fim da fase de tráfego e servidores permanecem durante o drain;
@@ -114,5 +114,6 @@ como fonte principal da análise.
 No modo HTTP, o trace `Rx` do cliente 3GPP representa fragmentos entregues à
 aplicação TCP, não datagramas com `SeqTsHeader`. Por isso, atraso/PDR de
 aplicação e igualdade da quantidade de pacotes com o FlowMonitor são critérios
-exclusivos do modo UDP. Vazão, goodput, Jain e janelas continuam sendo medidos
-na aplicação em todos os modos.
+exclusivos do modo UDP. Vazão, Jain e janelas da fase `traffic` continuam sendo
+medidos na aplicação em todos os modos; métricas de entrega após `drain` só
+devem ser interpretadas para os fluxos UDP.
