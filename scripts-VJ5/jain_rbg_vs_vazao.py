@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # ============================================================
-# jain_rbg_vs_vazao.py
+# jain_rbg_symbol_units_vs_vazao.py
 #
 # Compara, janela a janela, o Índice de Jain calculado sobre
 # RBG (estilo Diego — equidade na ALOCAÇÃO de recursos) com o
@@ -28,7 +28,7 @@
 #
 # Uso:
 #   cd ~/ns3-fmr
-#   python3 jain_rbg_vs_vazao.py
+#   python3 jain_rbg_symbol_units_vs_vazao.py
 #
 # Requer: pandas
 # ============================================================
@@ -48,7 +48,7 @@ except ImportError:
 # Configuração
 # ------------------------------------------------------------
 
-OUTPUT_DIR = Path("pesquisa/resultados/jain_rbg_vs_vazao")
+OUTPUT_DIR = Path("pesquisa/resultados/jain_rbg_symbol_units_vs_vazao")
 NS3_SCRIPT = "scratch/simulacao-vj5g"
 
 # udpAppStartTime é fixo em 400ms no simulacao-vj5g.cc (não é
@@ -136,13 +136,21 @@ def calcular_jain(valores) -> float:
     return (soma ** 2) / (n * soma_quadrados)
 
 
-def jain_rbg_por_janela(rbg_csv: Path, window_size_ms: int) -> pd.DataFrame:
+def jain_rbg_symbol_units_por_janela(rbg_csv: Path, window_size_ms: int) -> pd.DataFrame:
     """Lê o CommonSlotCsv (uma linha por RNTI por slot), agrupa
     os slots nas mesmas janelas de 100ms do WindowCsv, soma o
     RBG alocado por RNTI dentro de cada janela, e calcula o
     Jain sobre esse vetor de RBG por janela."""
 
     df = pd.read_csv(rbg_csv)
+    if "allocated_rbg_symbol_units" not in df.columns:
+        if "alloc_rbg" in df.columns:
+            print(f"[aviso] {rbg_csv} usa o nome legado alloc_rbg; "
+                  "interpretando como unidades RBG×símbolo")
+            df = df.rename(columns={"alloc_rbg": "allocated_rbg_symbol_units"})
+        else:
+            raise ValueError(
+                f"{rbg_csv} sem allocated_rbg_symbol_units")
     window_size_s = window_size_ms / 1000.0
 
     # Mesmo critério de bucketização usado por RegistrarJanela():
@@ -156,17 +164,17 @@ def jain_rbg_por_janela(rbg_csv: Path, window_size_ms: int) -> pd.DataFrame:
 
     # Soma RBG por RNTI dentro de cada janela
     rbg_por_janela_rnti = (
-        df.groupby(["window_id", "rnti"])["alloc_rbg"].sum().reset_index()
+        df.groupby(["window_id", "rnti"])["allocated_rbg_symbol_units"].sum().reset_index()
     )
 
     linhas = []
     for window_id, grupo in rbg_por_janela_rnti.groupby("window_id"):
-        jain = calcular_jain(grupo["alloc_rbg"].tolist())
+        jain = calcular_jain(grupo["allocated_rbg_symbol_units"].tolist())
         linhas.append({
             "window_id": window_id,
-            "jain_rbg": jain,
-            "rbg_total_janela": grupo["alloc_rbg"].sum(),
-            "num_ues_com_rbg": len(grupo),
+            "jain_rbg_symbol_units": jain,
+            "rbg_symbol_units_total_window": grupo["allocated_rbg_symbol_units"].sum(),
+            "num_ues_with_rbg_symbol_units": len(grupo),
         })
 
     return pd.DataFrame(linhas)
@@ -187,14 +195,14 @@ def main():
 
         df_vazao = pd.read_csv(window_csv)[["window_id", "time_s", "jain_throughput",
                                               "aggregate_thr_mbps"]]
-        df_rbg = jain_rbg_por_janela(rbg_csv, CENARIO_C3["WindowSizeMs"])
+        df_rbg = jain_rbg_symbol_units_por_janela(rbg_csv, CENARIO_C3["WindowSizeMs"])
 
         comparacao = df_vazao.merge(df_rbg, on="window_id", how="inner")
         comparacao.insert(0, "scheduler", scheduler)
         comparacoes.append(comparacao)
 
     dados = pd.concat(comparacoes, ignore_index=True)
-    comparacao_path = OUTPUT_DIR / "jain_rbg_vs_vazao_por_janela.csv"
+    comparacao_path = OUTPUT_DIR / "jain_rbg_symbol_units_vs_vazao_por_janela.csv"
     dados.to_csv(comparacao_path, index=False)
     print(f"\n[jain_cmp] Comparação por janela salva em: {comparacao_path}")
 
@@ -204,7 +212,7 @@ def main():
     resumo = (
         dados.groupby("scheduler")
         .agg(
-            jain_rbg_medio=("jain_rbg", "mean"),
+            jain_rbg_symbol_units_medio=("jain_rbg_symbol_units", "mean"),
             jain_vazao_medio=("jain_throughput", "mean"),
             throughput_medio_mbps=("aggregate_thr_mbps", "mean"),
         )
@@ -212,11 +220,11 @@ def main():
         .reset_index()
     )
     resumo["divergencia"] = (
-        resumo["jain_rbg_medio"] - resumo["jain_vazao_medio"]
+        resumo["jain_rbg_symbol_units_medio"] - resumo["jain_vazao_medio"]
     ).round(4)
     print(resumo.to_string(index=False))
 
-    resumo_path = OUTPUT_DIR / "resumo_jain_rbg_vs_vazao.csv"
+    resumo_path = OUTPUT_DIR / "resumo_jain_rbg_symbol_units_vs_vazao.csv"
     resumo.to_csv(resumo_path, index=False)
     print(f"\n[jain_cmp] Resumo salvo em: {resumo_path}")
 
